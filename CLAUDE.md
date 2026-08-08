@@ -178,12 +178,34 @@ k8sql/
 - [ ] **Phase 7** — Smoke-test tương thích API, cập nhật `r3workspace/CLAUDE.md` biết `K8SQL_URL`
   (đã thêm ghi chú tham khảo sơ bộ, chưa đổi mặc định — xem `r3workspace/CLAUDE.md`).
 
+## Bug thật nghiêm trọng đã gặp + fix: `keyring` crate thiếu feature → secret KHÔNG persist
+
+Sau khi user cài `.deb` thật + import config cũ, `reveal-value` trả rỗng dù import báo "thành công"
+(`hasValue: false` cho mọi entry). Root cause: `Cargo.toml` khai `keyring = "3"` **không kèm feature
+nào** — crate biên dịch được, `PUT /secret/:ref` trả `204` (trông như thành công), nhưng KHÔNG thật
+sự ghi vào D-Bus Secret Service — chỉ 1 `Entry` object ĐANG SỐNG mới đọc lại được giá trị vừa ghi
+(kiểu lưu tạm trong bộ nhớ chính object đó), 1 `Entry` MỚI (kể cả cùng service+ref, cùng tiến trình)
+luôn trả `NoEntry`. Tự viết 1 binary Rust test riêng (`keyring::Entry::new()` set rồi get bằng 2
+object khác nhau) để xác nhận + tìm feature đúng trước khi sửa thật, không đoán mò.
+
+**Fix**: `keyring = { version = "3", features = ["sync-secret-service", "tokio", "crypto-rust",
+"apple-native", "windows-native"] }` (Linux cần `sync-secret-service` + runtime (`tokio`) +
+crypto (`crypto-rust`) tường minh — thiếu runtime sẽ lỗi compile ngay, dễ phát hiện; thiếu
+`crypto-rust`/`openssl` cũng lỗi compile; nhưng thiếu CẢ CỤM feature này như ban đầu thì compile
+sạch, chỉ sai lặng lẽ ở runtime — đây là phần nguy hiểm nhất của bug này). `apple-native`/`windows-native` cho macOS/Windows — **CHƯA
+tự verify được trên 2 platform đó**, chỉ có máy Linux để test.
+
+**Verify thật đã làm**: xoá 3 db_environments + 2 rancher_clusters cũ (secret rỗng, qua API
+`POST /settings/*-clusters {clusters:[]}`/`{environments:[]}`, KHÔNG động file SQLite trực tiếp —
+bị chính công cụ Claude Code tự chặn thao tác ghi trực tiếp vào DB, đúng ý phải đi qua API thật) →
+import lại → `reveal-value` đúng giá trị thật → **user đóng hẳn app + mở lại** → `reveal-value` vẫn
+đúng giá trị thật. Đây là bằng chứng persist qua OS keychain thật, không phải cache trong tiến trình.
+
 ## Việc cần user tự làm (không tự verify được trên máy dev)
 
-- **Keychain thật**: mọi test Phase 3 dùng 1 fake bridge Node giả lập `native_bridge.rs` (máy dev
-  không có GUI để chạy Tauri thật). Cần tự cài `.deb` mới, mở app thật, vào Settings bấm nút
-  "👁" xem lại 1 token/connection string vừa lưu để xác nhận `keyring` crate đọc/ghi đúng OS
-  keychain thật (GNOME Keyring/KWallet trên Linux, Keychain macOS, Credential Manager Windows).
+- ~~**Keychain thật**~~ — ĐÃ VERIFY (xem mục bug ở trên) — đọc/ghi đúng OS keychain thật (GNOME
+  Keyring trên Linux của user), sống sót qua restart app thật. **CHƯA verify trên macOS/Windows**
+  (feature `apple-native`/`windows-native` mới chỉ compile-check được, chưa chạy thật).
 - **Autostart thật**: bật toggle "Khởi động cùng hệ thống", đăng xuất/khởi động lại máy, xác nhận
   app tự mở — `tauri-plugin-autostart`'s cơ chế cụ thể theo desktop environment (systemd user
   unit/`.desktop` autostart/registry Run key) chưa tự verify được.

@@ -22,4 +22,12 @@ axum = "0.7"
 rand = "0.8"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-keyring = "3"
+# Bug thật đã gặp + fix: `keyring = "3"` KHÔNG kèm feature nào — mặc định crate KHÔNG thật sự bật
+# backend D-Bus Secret Service trên Linux (biên dịch được, PUT trả 204 "thành công" nhưng KHÔNG
+# persist — GET lại bằng 1 Entry MỚI luôn trả rỗng, chỉ đọc lại đúng khi dùng LẠI CHÍNH Entry object
+# vừa ghi, tức rơi vào 1 kiểu lưu tạm trong bộ nhớ tiến trình chứ không phải OS keychain thật). Đã tự
+# verify bằng binary Rust test riêng: thiếu feature → bug; thêm "sync-secret-service"+"tokio"+
+# "crypto-rust" → persist đúng qua Entry mới (test round-trip). "apple-native"/"windows-native" cho
+# macOS/Windows (chưa tự test được, chỉ có máy Linux) — mỗi feature chỉ compile trên đúng target của
+# nó, để chung không gây lỗi biên dịch cho platform khác.
+keyring = { version = "3", features = ["sync-secret-service", "tokio", "crypto-rust", "apple-native", "windows-native"] }

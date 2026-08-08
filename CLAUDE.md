@@ -27,15 +27,17 @@ thật. **k8sctl tiếp tục chạy song song, không bị đụng tới** tron
    triển khai xong (Phase 2)** — build qua `server/scripts/build-sea.mjs` (`npm run build:sea`
    trong `server/`), xem "Ghi chú kỹ thuật SEA" bên dưới về 2 lỗi thật đã gặp + cách fix.
 4. **Config/secret**: SQLite (`node:sqlite`, built-in Node ≥22) cho dữ liệu có cấu trúc + OS
-   keychain (crate `keyring` phía Rust) cho giá trị secret thật — **chưa triển khai** (Phase 3).
+   keychain (crate `keyring` phía Rust, qua `native_bridge.rs`) cho giá trị secret thật — **đã
+   triển khai** (Phase 3 phần lõi, xem trạng thái phase bên dưới).
 5. **Port mặc định 4210** (k8sctl dùng 3210) — 2 app chạy song song không xung đột. Dò port trống
    nếu bị chiếm (`src-tauri/src/ports.rs`).
 6. **Ngôn ngữ Hybrid**: `server/legacy/**/*.js` giữ nguyên JS; mọi code MỚI (`server/src/**/*.ts`,
    toàn bộ `src-tauri/`) viết TypeScript/Rust. `server/tsconfig.json` có `allowJs: true`.
 7. **Ràng buộc cứng — tương thích REST API**: mọi route trong `server/legacy/app.js` phải giữ
    nguyên path/method/request/response so với `k8sctl/app.js` gốc, để `r3workspace/index.js` chỉ
-   cần đổi `K8SCTL_URL` → `K8SQL_URL` là chạy được. Route MỚI duy nhất được thêm:
-   `POST /internal/shutdown` (graceful shutdown, Tauri gọi trước khi kill sidecar).
+   cần đổi `K8SCTL_URL` → `K8SQL_URL` là chạy được. Route MỚI đã thêm (không có ở k8sctl gốc):
+   `POST /internal/shutdown` (graceful shutdown), `POST /internal/import-k8sctl-config` (import 1
+   lần từ export cũ), `GET/POST /native/autostart` (proxy sang `native_bridge.rs`).
 
 ## Cấu trúc repo
 
@@ -44,26 +46,39 @@ k8sql/
 ├── src-tauri/              # Rust shell
 │   ├── Cargo.toml, tauri.conf.json, build.rs, capabilities/default.json
 │   └── src/
-│       ├── main.rs         # entry, đăng ký plugin (shell/dialog/autostart), chọn spawn_dev/spawn_release
-│       │                   #   theo cfg!(debug_assertions), graceful shutdown khi đóng cửa sổ
-│       ├── sidecar.rs       # spawn_dev() — spawn `node server/src/bootstrap.ts` (cargo tauri dev).
-│       │                   #   spawn_release() — .sidecar("k8sql-server") (binary SEA, cargo tauri build);
-│       │                   #   tự resolve resource dir "public" qua Tauri path API rồi truyền --public-dir
-│       │                   #   cho sidecar (KHÔNG để Node tự đoán qua process.execPath — xem "Ghi chú SEA")
-│       └── ports.rs         # find_available_port(), mặc định DEFAULT_PORT=4210
-│   └── binaries/            # SEA binary theo target-triple (vd k8sql-server-x86_64-unknown-linux-gnu),
-│                             #   nạp qua tauri.conf.json's bundle.externalBin
+│       ├── main.rs           # entry, đăng ký plugin (shell/dialog/autostart), start native_bridge,
+│       │                     #   chọn spawn_dev/spawn_release theo cfg!(debug_assertions), graceful
+│       │                     #   shutdown khi đóng cửa sổ, resolve_data_dir() (app-data OS chuẩn)
+│       ├── sidecar.rs         # spawn_dev()/spawn_release() — truyền --data-dir + --native-bridge-url/
+│       │                     #   -token cho sidecar ngoài --port/--public-dir cũ
+│       ├── native_bridge.rs   # HTTP loopback (axum) — /secret/:ref (keychain, crate `keyring`) +
+│       │                     #   /autostart (tauri-plugin-autostart) — bearer token/session
+│       └── ports.rs           # find_available_port(), mặc định DEFAULT_PORT=4210
+│   └── binaries/            # SEA binary theo target-triple, nạp qua tauri.conf.json's bundle.externalBin
 │
 ├── server/
 │   ├── package.json         # engines: node >=22
-│   ├── tsconfig.json        # allowJs: true, checkJs: false
-│   ├── legacy/               # PORT từ k8sctl — controllers/, services/, utils/, scripts/lib/, app.js
-│   │                         #   (export createApp({publicDir}) thay vì app đã cấu hình sẵn — xem "Ghi chú SEA")
-│   ├── src/bootstrap.ts      # entry mới: đọc --port/--host/--public-dir, gọi createApp(), app.listen(),
-│   │                         #   log "K8SQL_READY port=<n>"
-│   ├── scripts/build-sea.mjs # esbuild bundle + node --experimental-sea-config + postject → server/build/k8sql-server
-│   ├── scripts/shims/optional-require.cjs  # shim SEA-safe thay `optional-require` (mongodb-legacy-driver dùng) — xem "Ghi chú SEA"
-│   └── public/                # REUSE NGUYÊN VẸN: index.html, vendor/codemirror.bundle.js, shared/settings-modal.*
+│   ├── tsconfig.json        # allowJs, moduleDetection: force (xem "Ghi chú kỹ thuật TS")
+│   ├── legacy/                 # PORT từ k8sctl — controllers/, services/, utils/, app.js
+│   │   │                       #   (export createApp({publicDir, registerExtraRoutes}))
+│   │   └── utils/base-dir.js   # MỚI — getBaseDir() đọc process.env.K8SQL_BASE_DIR, thay __dirname
+│   │                           #   (bug thật: __dirname trong SEA = dirname(execPath), không phải
+│   │                           #   thư mục source — sửa ở 7 file legacy, xem "Ghi chú kỹ thuật SEA")
+│   ├── src/
+│   │   ├── bootstrap.ts             # entry: đọc --port/--host/--public-dir/--data-dir/--native-bridge-*,
+│   │   │                           #   set K8SQL_BASE_DIR, getDb()+materializeLegacyConfig() TRƯỚC
+│   │   │                           #   require legacy/app, đăng ký route /internal/*, /native/autostart
+│   │   ├── config/db.ts             # SQLite (node:sqlite) — rancher_clusters, db_environments,
+│   │   │                           #   namespace_groups, app_settings (schema DDL trong chính file)
+│   │   ├── secrets/keychainClient.ts # gọi native_bridge (getSecret/setSecret/deleteSecret/get|setAutostart)
+│   │   ├── secrets/envShim.ts        # materializeLegacyConfig() — SQLite+keychain → config/*.json + .env
+│   │   │                           #   thật trên đĩa (chạy lại sau mỗi lần SQLite đổi, vd sau import)
+│   │   └── migration/importFromK8sctl.ts  # import export cũ k8sctl (GET /sql/config/export) vào SQLite+keychain
+│   ├── scripts/build-sea.mjs              # esbuild bundle + node --experimental-sea-config + postject
+│   ├── scripts/shims/optional-require.cjs # shim SEA-safe thay `optional-require` (mongodb-legacy-driver)
+│   ├── scripts/import-k8sctl-config.mjs   # CLI mỏng POST file export cũ tới sidecar đang chạy
+│   └── public/                # REUSE: index.html, vendor/*, shared/settings-modal.* (đã sửa — bỏ ô
+│                               #   "Thư mục cài đặt", thêm toggle "Khởi động cùng hệ thống")
 │
 └── README.md                 # hướng dẫn chạy dev
 ```
@@ -74,11 +89,11 @@ k8sql/
   `public/`, 404 handler, `/settings/current` đều đúng như k8sctl gốc khi chưa có config thật;
   `/sql/environments` trả lỗi rõ ràng — đúng kỳ vọng vì chưa có config, không phải bug). Tauri shell
   (`main.rs`/`sidecar.rs`/`ports.rs`/`tauri.conf.json`) **compile sạch** (`cargo check`/`cargo
-  build`, 0 warning). **CHƯA verify được `cargo tauri dev` chạy full end-to-end (cửa sổ thật mở +
-  load đúng URL sidecar)** — máy dev không có X server/Wayland (`DISPLAY`/`WAYLAND_DISPLAY` rỗng)
-  và không có `xvfb-run` cài sẵn (không tự `apt install` khi chưa được yêu cầu). Người dùng cần tự
-  chạy `cargo tauri dev` trên máy có GUI thật để xác nhận cửa sổ mở đúng + hiển thị đúng SQL Tool UI
-  trước khi coi Phase 1 hoàn tất 100%.
+  build`, 0 warning). **Đã verify GUI thật trên máy user (có desktop)** — cửa sổ mở đúng, hiển thị
+  đúng SQL Tool UI như k8sctl. Bug thật gặp lúc verify (đã fix, xem commit riêng): `tauri.conf.json`
+  khai sẵn 1 window mặc định (label ngầm định `"main"`) TRÙNG với window `main.rs` tự tạo sau khi
+  sidecar sẵn sàng → panic `WebviewLabelAlreadyExists("main")` ngay khi mở app — fix: `"windows":
+  []` trong config, để `main.rs` là nơi duy nhất tạo cửa sổ.
   - Máy dev có `/usr/bin/rustc` 1.75 (apt) che trước `rustup`-managed toolchain (1.94.1) trong
     `PATH` (`/usr/bin` đứng trước `~/.cargo/bin` trong `$PATH`) — phải tự prepend
     `~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin` khi chạy `cargo`/`cargo tauri` liên
@@ -112,15 +127,69 @@ k8sql/
      bundle) rồi truyền qua CLI arg `--public-dir` cho sidecar — `bootstrap.ts` chỉ đọc arg này,
      KHÔNG tự đoán vị trí nữa. `legacy/app.js` đổi từ `module.exports = app` (tự tính qua
      `__dirname`, vô nghĩa sau khi bundle SEA) sang `module.exports = { createApp({publicDir}) }`.
-- [ ] **Phase 3** — SQLite (`server/src/config/db.ts`) + keychain bridge (`src-tauri/src/keychain.rs`,
-  crate `keyring`) + `server/src/secrets/{keychainClient,envShim}.ts` + import 1 lần từ k8sctl
-  (`server/src/migration/importFromK8sctl.ts`).
-- [ ] **Phase 4** — First-run wizard với progress bar % (`window.emit("wizard-progress", ...)`).
-- [ ] **Phase 5** — `tauri-plugin-autostart` + `tauri-plugin-dialog` thay hẳn
-  `scripts/lib/browse-directory.js`/`config-info.js` (xoá khỏi `legacy/scripts/lib/`), xoá mọi
-  script cài đặt bash/PowerShell cũ (không port sang k8sql, xem "Việc KHÔNG port" bên dưới).
+- [x] **Phase 3 (phần lõi) — SQLite + keychain + import + autostart, HOÀN TẤT và verify E2E** (qua
+  fake bridge Node giả lập native_bridge.rs, vì máy dev không chạy được GUI thật để test Rust
+  keychain trực tiếp — user cần tự xác nhận keychain thật hoạt động trên máy có desktop, xem "Việc
+  cần user tự làm" bên dưới):
+  - `native_bridge.rs` (axum + `keyring` crate) — `/secret/:ref` (GET/PUT/DELETE), `/autostart`
+    (GET/POST qua `tauri-plugin-autostart`), bearer token random/session truyền cho sidecar qua CLI
+    arg lúc spawn.
+  - **Bug thật đã gặp + fix — `__dirname` trong SEA không chỉ ảnh hưởng `public/`**: 7 file legacy
+    khác (`db-config.service.js`, `db-environment.service.js`, `kube.service.js`,
+    `provision.service.js`, `rancher.client.js`, `settings.service.js`, `utils/logger.js`) tính
+    đường dẫn `config/*.json`/`.env`/`logs/` qua `path.join(__dirname, "..", ...)` — đã tự verify
+    thực nghiệm `__dirname` trong bundle SEA luôn bằng `path.dirname(process.execPath)` (dựng 1 SEA
+    binary test riêng, di chuyển sang thư mục khác, in `__dirname` ra) → trên layout `.deb` thật
+    (`/usr/bin/k8sql-server`) sẽ trỏ vào `/` (filesystem root, không ghi được). Fix: thêm
+    `legacy/utils/base-dir.js` (`getBaseDir()` đọc `process.env.K8SQL_BASE_DIR`, bootstrap.ts set
+    trước khi require bất kỳ legacy service nào), sửa cả 7 chỗ dùng `__dirname` → `getBaseDir()`.
+  - `envShim.materializeLegacyConfig()` ghi `config/rancher-clusters.json`/`db-environments.json`/
+    `namespaces.json`/`.env` từ SQLite+keychain vào `K8SQL_BASE_DIR` — chạy lúc sidecar khởi động
+    VÀ sau mỗi lần SQLite đổi (vd sau import) để legacy code (đọc file tĩnh) thấy dữ liệu mới ngay,
+    không cần restart (bug thật đã bắt: quên gọi lại lần 2, `/sql/environments` trả rỗng sau import
+    cho tới khi restart — đã fix, gọi lại `materializeLegacyConfig()` cuối route import).
+  - `server/src/migration/importFromK8sctl.ts` + `scripts/import-k8sctl-config.mjs` — import export
+    cũ k8sctl (`GET /sql/config/export`) vào SQLite+keychain, tự tạo Rancher cluster **placeholder**
+    (rancher_url/cluster_id rỗng) nếu `rancherKey` chưa có sẵn, tự dịch `connectionString` →
+    template `__HOST__` cho entry `mode: "k8s-tunnel"`. Chạy qua route `POST
+    /internal/import-k8sctl-config` TRONG tiến trình sidecar đang sống (không phải script đứng
+    riêng) — chỉ sidecar mới có sẵn bearer token gọi native_bridge lúc đó.
+  - Settings modal: bỏ ô "Thư mục cài đặt" + nút "Chọn thư mục..." (Tauri không hỗ trợ relocate),
+    thêm toggle "Khởi động cùng hệ thống" (`GET/POST /native/autostart`, route Node mới proxy sang
+    `native_bridge.rs`).
+  - **Settings write-path — ĐÃ FIX** (cùng phiên, ngay sau khi phát hiện): `POST
+    /settings/rancher-clusters`/`/settings/db-environments`/`/settings/apply` giờ ghi thẳng SQLite +
+    keychain qua `server/src/config/repository/settingsRepo.ts`
+    (`upsertRancherClusters`/`upsertDbEnvironments`/`applySecretValues`), rồi gọi lại
+    `materializeLegacyConfig()` ngay — không còn ghi trực tiếp `config/*.json` như trước (bug đã
+    verify: lưu → restart sidecar → dữ liệu vẫn còn, xem test trong lịch sử commit). `applySettings`
+    bỏ hẳn cơ chế "installDir + spawn script bash/PowerShell" của k8sctl gốc (không áp dụng —
+    Tauri không relocate) — chỉ còn ghi `values` (secret) vào keychain theo đúng tên biến derive từ
+    `rancher_clusters.name`/`db_environments.name` (`deriveTokenEnvVar`/`deriveConnStringEnvVar`,
+    `envShim.ts`).
+- [ ] **Phase 4** — First-run wizard với progress bar % (`window.emit("wizard-progress", ...)`) —
+  phần lớn hạ tầng (SQLite/keychain/import) đã có sẵn từ Phase 3, chỉ còn thiếu UI wizard bọc ngoài.
+- [ ] **Phase 5** — `tauri-plugin-dialog` thay hẳn `scripts/lib/browse-directory.js`/`config-info.js`
+  (xoá khỏi `legacy/scripts/lib/` — vẫn còn tồn tại, `settings.service.js` vẫn require, chưa xoá).
+  `tauri-plugin-autostart` **đã dùng xong ở Phase 3** (không cần làm lại). Xoá mọi script cài đặt
+  bash/PowerShell cũ (không port sang k8sql, xem "Việc KHÔNG port" bên dưới — hiện chưa từng copy
+  sang nên thực ra không có gì phải xoá, chỉ cần xác nhận không ai lỡ thêm lại).
 - [ ] **Phase 6** — CI 3 runner GitLab (`.gitlab-ci.yml`), build installer 3 nền tảng.
-- [ ] **Phase 7** — Smoke-test tương thích API, cập nhật `r3workspace/CLAUDE.md` biết `K8SQL_URL`.
+- [ ] **Phase 7** — Smoke-test tương thích API, cập nhật `r3workspace/CLAUDE.md` biết `K8SQL_URL`
+  (đã thêm ghi chú tham khảo sơ bộ, chưa đổi mặc định — xem `r3workspace/CLAUDE.md`).
+
+## Việc cần user tự làm (không tự verify được trên máy dev)
+
+- **Keychain thật**: mọi test Phase 3 dùng 1 fake bridge Node giả lập `native_bridge.rs` (máy dev
+  không có GUI để chạy Tauri thật). Cần tự cài `.deb` mới, mở app thật, vào Settings bấm nút
+  "👁" xem lại 1 token/connection string vừa lưu để xác nhận `keyring` crate đọc/ghi đúng OS
+  keychain thật (GNOME Keyring/KWallet trên Linux, Keychain macOS, Credential Manager Windows).
+- **Autostart thật**: bật toggle "Khởi động cùng hệ thống", đăng xuất/khởi động lại máy, xác nhận
+  app tự mở — `tauri-plugin-autostart`'s cơ chế cụ thể theo desktop environment (systemd user
+  unit/`.desktop` autostart/registry Run key) chưa tự verify được.
+- **2 Rancher cluster placeholder** sau khi import (`K8SOPERATOR-TTN_VNPT_VN`,
+  `PLATFORM_IDG_VNPT_VN`) — thiếu URL+token thật, tự điền qua Settings UI (giờ ghi bền vững qua
+  restart, xem "Settings write-path — ĐÃ FIX" ở trên).
 
 ## Việc KHÔNG port sang k8sql (thay thế bởi Tauri, xoá khỏi phạm vi)
 

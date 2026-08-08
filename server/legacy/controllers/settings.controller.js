@@ -15,7 +15,9 @@ async function getCurrentInstallInfo(_req, res, next) {
 
 async function applySettings(req, res, next) {
   try {
-    requireBodyFields(req.body, ["installDir"]);
+    // k8sql: KHÔNG có "installDir" nữa (Tauri không hỗ trợ relocate, xem CLAUDE.md mục "Việc KHÔNG
+    // port") — chỉ còn "values" (secret token/connection string thật), ghi thẳng SQLite+keychain
+    // qua settingsRepo.applySecretValues() thay vì spawn script bash/PowerShell như k8sctl gốc.
     const data = await settingsService.applySettings(req.body);
     res.json({ success: true, data });
   } catch (error) {
@@ -44,7 +46,7 @@ async function listRancherClusters(_req, res, next) {
 async function saveRancherClusters(req, res, next) {
   try {
     requireBodyFields(req.body, ["clusters"]);
-    const data = settingsService.saveRancherClusters(req.body.clusters);
+    const data = await settingsService.saveRancherClusters(req.body.clusters);
     res.json({ success: true, data });
   } catch (error) {
     next(error);
@@ -158,7 +160,7 @@ async function listDbEnvironments(_req, res, next) {
 async function saveDbEnvironments(req, res, next) {
   try {
     requireBodyFields(req.body, ["environments"]);
-    const data = settingsService.saveDbEnvironments(req.body.environments);
+    const data = await settingsService.saveDbEnvironments(req.body.environments);
     res.json({ success: true, data });
   } catch (error) {
     next(error);

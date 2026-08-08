@@ -2,13 +2,14 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
 const { AppError } = require("../utils/error");
 const { logOperation } = require("../utils/logger");
 const { browseDirectoryNative } = require("../scripts/lib/browse-directory");
 const { readEnvFile, dbEnvVarNames } = require("../scripts/lib/config-info");
 const rancherClient = require("./rancher.client");
 const { getBaseDir } = require("../utils/base-dir");
+const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
+const { materializeLegacyConfig } = require("../../src/secrets/envShim.ts");
 
 const ROOT_DIR = getBaseDir();
 const RANCHER_CLUSTERS_PATH = path.join(ROOT_DIR, "config", "rancher-clusters.json");
@@ -29,67 +30,19 @@ function getCurrentInstallInfo() {
   };
 }
 
-function assertValidInstallDir(installDir) {
-  if (typeof installDir !== "string" || !installDir.trim()) {
-    throw new AppError('Thiếu "installDir".', 400);
-  }
-  if (!path.isAbsolute(installDir)) {
-    throw new AppError('"installDir" phải là đường dẫn tuyệt đối.', 400);
-  }
-}
-
-// Không làm việc di chuyển/tạo lại service/ghi .env NGAY trong tiến trình Express đang chạy — spawn
-// 1 tiến trình con TÁCH RỜI (detached) gọi lại logic đã có sẵn trong setup.sh (qua
-// scripts/apply-settings.sh + scripts/relocate-and-recreate.sh + scripts/apply-env-values.sh), để
-// tránh vòng đời của chính tiến trình đang xử lý request này (có thể tự bị restart/kill bởi chính
-// thao tác "tạo lại service" nó gọi) làm hỏng response đang gửi dở. Response trả về NGAY sau khi
-// spawn xong — kết quả thật sự (di chuyển/ghi .env/service) xem trong logs/settings-relocate.log.
-//
-// `values` — cùng shape {PORT, R3_RANCHER_OPERATOR_TOKEN, IDG_PLATFORM_RANCHER_TOKEN, <DB_ENV_VAR>: ...}
-// wizard.html gửi lên /apply — CHỈ chứa field user đã nhập (để trống ô nào = giữ nguyên giá trị cũ,
-// xem scripts/apply-env-values.sh::apply_env_values_from_answers()). Ghi ra file JSON tạm rồi giao
-// cho script con xử lý — KHÔNG tự ghi .env bằng JS ở đây để dùng lại đúng 1 logic duy nhất với
-// setup.sh (tránh 2 nơi hiểu khác nhau thế nào là "để trống = giữ nguyên").
-async function applySettings({ installDir, values }) {
-  assertValidInstallDir(installDir);
-  const newDir = path.resolve(installDir);
-  const port = Number(process.env.PORT || 3210);
-  const logDir = path.join(ROOT_DIR, "logs");
-  fs.mkdirSync(logDir, { recursive: true });
-
-  const runDir = path.join(ROOT_DIR, ".run");
-  fs.mkdirSync(runDir, { recursive: true });
-  // Tên file khác "wizard-answers.json" (dùng riêng bởi luồng quickstart/wizard cài đặt gốc) — tránh
-  // 2 luồng độc lập vô tình đụng chung 1 file nếu chạy gần thời điểm nhau.
-  const answersPath = path.join(runDir, "settings-answers.json");
-  fs.writeFileSync(answersPath, JSON.stringify({ installDir: newDir, values: values || {} }, null, 2) + "\n");
-
-  let child;
-  if (process.platform === "win32") {
-    const script = path.join(ROOT_DIR, "scripts", "apply-settings.ps1");
-    child = spawn(
-      "powershell",
-      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, ROOT_DIR, newDir, String(port), answersPath],
-      { detached: true, stdio: "ignore", cwd: ROOT_DIR }
-    );
-  } else {
-    const script = path.join(ROOT_DIR, "scripts", "apply-settings.sh");
-    child = spawn("bash", [script, ROOT_DIR, newDir, String(port), answersPath], {
-      detached: true,
-      stdio: "ignore",
-      cwd: ROOT_DIR
-    });
-  }
-  child.unref();
+// k8sql: KHÔNG relocate install dir (Tauri không hỗ trợ, xem CLAUDE.md mục "Việc KHÔNG port") —
+// applySettings() giờ chỉ còn việc ghi giá trị secret thật (`values`, map {<tokenEnvVar hoặc
+// connectionStringEnvVar đã derive>: <giá trị thật>}) vào keychain qua
+// settingsRepo.applySecretValues(), rồi materialize lại config/.env NGAY trong cùng tiến trình
+// (không cần spawn script/restart service như k8sctl gốc — SQLite+keychain không cần "tạo lại
+// service" để đọc giá trị mới, chỉ cần ghi xong + materialize).
+async function applySettings({ values }) {
+  await settingsRepo.applySecretValues(values || {});
+  await materializeLegacyConfig(ROOT_DIR);
 
   logOperation({ resource: "settings", operation: "apply", success: true });
 
-  return {
-    message:
-      newDir === ROOT_DIR
-        ? "Đang lưu cấu hình + khởi động lại tại chỗ — vài giây nữa app sẽ sẵn sàng lại."
-        : `Đang di chuyển sang "${newDir}" và khởi động lại service — vài giây nữa hãy tải lại trang.`
-  };
+  return { message: "Đã lưu cấu hình." };
 }
 
 function readJsonArray(filePath) {
@@ -99,16 +52,6 @@ function readJsonArray(filePath) {
   } catch {
     return [];
   }
-}
-
-// Ghi thẳng ĐỒNG BỘ (fs.writeFileSync, không qua .run/*-answers.json + detached script như
-// applySettings()) — vì listRancherClusters()/loadEnvironments() (services/db-environment.service.js,
-// services/rancher.client.js) đều đọc lại config/*.json TƯƠI mỗi lần gọi (không cache qua
-// require()), nên không cần restart tiến trình để thấy dữ liệu mới. Cơ chế detached script CHỈ
-// cần thiết cho thứ phải reload process.env (secret token/connection string) hoặc di chuyển thư
-// mục cài đặt — không áp dụng cho việc ghi metadata cluster/connection (không phải secret).
-function writeJsonArray(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf8");
 }
 
 // Không trả token thật qua API — chỉ metadata + hasValue (đã có giá trị trong .env hay chưa),
@@ -126,7 +69,12 @@ function listRancherClusters() {
   }));
 }
 
-function saveRancherClusters(clusters) {
+// GHI VÀO SQLITE (settingsRepo.upsertRancherClusters) thay vì config/rancher-clusters.json trực
+// tiếp — file JSON đó giờ chỉ là bản materialize TỪ SQLite (envShim.ts), ghi thẳng vào nó sẽ bị
+// ghi đè mất ở lần restart/materialize kế tiếp (bug thật đã tự phát hiện, xem CLAUDE.md mục "Việc
+// tồn đọng Phase 3" — đã fix bằng thay đổi này). `tokenEnvVar` phía client vẫn gửi lên (cosmetic,
+// derive từ URL) nhưng không còn dùng để lưu — secret_ref SQLite tự sinh, không phụ thuộc tên biến.
+async function saveRancherClusters(clusters) {
   if (!Array.isArray(clusters)) {
     throw new AppError('"clusters" phải là 1 mảng.', 400);
   }
@@ -149,17 +97,8 @@ function saveRancherClusters(clusters) {
     tokenEnvVars.add(cluster.tokenEnvVar);
   }
 
-  writeJsonArray(
-    RANCHER_CLUSTERS_PATH,
-    clusters.map((cluster) => ({
-      name: cluster.name,
-      rancherUrl: cluster.rancherUrl,
-      clusterId: cluster.clusterId,
-      tokenEnvVar: cluster.tokenEnvVar,
-      insecureTLS: Boolean(cluster.insecureTLS),
-      description: cluster.description || ""
-    }))
-  );
+  await settingsRepo.upsertRancherClusters(clusters);
+  await materializeLegacyConfig(ROOT_DIR);
 
   return { message: "Đã lưu danh sách Rancher cluster." };
 }
@@ -185,7 +124,8 @@ function listDbEnvironments() {
   }));
 }
 
-function saveDbEnvironments(environments) {
+// GHI VÀO SQLITE (settingsRepo.upsertDbEnvironments) — cùng lý do saveRancherClusters() ở trên.
+async function saveDbEnvironments(environments) {
   if (!Array.isArray(environments)) {
     throw new AppError('"environments" phải là 1 mảng.', 400);
   }
@@ -220,29 +160,8 @@ function saveDbEnvironments(environments) {
     envVars.add(item.connectionStringEnvVar);
   }
 
-  writeJsonArray(
-    DB_ENVIRONMENTS_PATH,
-    environments.map((item) => {
-      const entry = {
-        name: item.name,
-        description: item.description || "",
-        connectionStringEnvVar: item.connectionStringEnvVar,
-        allowWrite: Boolean(item.allowWrite)
-      };
-      if (item.engine) entry.engine = item.engine;
-      if (item.mode) entry.mode = item.mode;
-      if (item.domain) entry.domain = item.domain;
-      if (item.rancherKey) {
-        entry.rancherKey = item.rancherKey;
-        entry.namespace = item.namespace;
-        entry.dbHost = item.dbHost;
-        entry.dbPort = item.dbPort;
-        entry.projectId = item.projectId;
-        if (item.existingPodName) entry.existingPodName = item.existingPodName;
-      }
-      return entry;
-    })
-  );
+  await settingsRepo.upsertDbEnvironments(environments);
+  await materializeLegacyConfig(ROOT_DIR);
 
   return { message: "Đã lưu danh sách connection string." };
 }

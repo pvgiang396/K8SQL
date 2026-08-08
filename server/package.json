@@ -1,0 +1,31 @@
+{
+  "name": "k8sql-server",
+  "version": "0.1.0",
+  "description": "Node backend sidecar cho k8sql (Tauri) — ported từ k8sctl, xem CLAUDE.md",
+  "private": true,
+  "main": "src/bootstrap.ts",
+  "scripts": {
+    "start": "node src/bootstrap.ts",
+    "dev": "node --watch src/bootstrap.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^1.4.0",
+    "bson": "^6.10.4",
+    "express": "^4.21.2",
+    "js-yaml": "^4.1.0",
+    "mongodb": "^6.10.0",
+    "mongodb-legacy-driver": "npm:mongodb@^3.7.4",
+    "pg": "^8.22.0",
+    "undici": "^8.10.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  }
+}

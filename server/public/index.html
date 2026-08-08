@@ -1,0 +1,1728 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>K8SQL</title>
+<link rel="icon" type="image/png" href="/assets/sql.png" />
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-alt: #f5f6f8;
+    --border: #d9dce1;
+    --border-soft: #e7e9ec;
+    --text: #1b1f24;
+    --text-dim: #6b7280;
+    --accent: #2563eb;
+    --accent-fg: #ffffff;
+    --danger: #dc2626;
+    --danger-bg: #fef2f2;
+    --result-header-bg: #bac0cc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1f24;
+      --bg-alt: #23272e;
+      --border: #343a42;
+      --border-soft: #2b2f36;
+      --text: #e6e8eb;
+      --text-dim: #9aa1ab;
+      --accent: #3b82f6;
+      --accent-fg: #0b0e12;
+      --danger: #f87171;
+      --danger-bg: #3a1d1d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1b1f24; --bg-alt: #23272e; --border: #343a42; --border-soft: #2b2f36;
+    --text: #e6e8eb; --text-dim: #9aa1ab; --accent: #3b82f6; --accent-fg: #0b0e12;
+    --danger: #f87171; --danger-bg: #3a1d1d;
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --bg-alt: #f5f6f8; --border: #d9dce1; --border-soft: #e7e9ec;
+    --text: #1b1f24; --text-dim: #6b7280; --accent: #2563eb; --accent-fg: #ffffff;
+    --danger: #dc2626; --danger-bg: #fef2f2;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  /* Header tách 2 khối thẳng hàng với sidebar (trái, 270px) + query panel (phải) bên dưới —
+     Execute/Clear nằm ở khối phải, bắt đầu ngay từ mép trái của query panel (xem layout.png). */
+  header {
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
+    flex: 0 0 auto;
+  }
+  header .header-left {
+    width: 270px;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 14px;
+    border-right: 1px solid var(--border);
+  }
+  header .header-right {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    padding: 6px 14px;
+    min-width: 0;
+  }
+  header .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  header .header-actions .divider {
+    width: 1px;
+    align-self: stretch;
+    margin: 4px 4px;
+    background: linear-gradient(to bottom, transparent, var(--border) 20%, var(--border) 80%, transparent);
+    opacity: .8;
+  }
+  header .icon-btn {
+    background: none;
+    border: none;
+    padding: 5px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 17px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  header .icon-btn:hover { background: var(--border-soft); }
+  header .icon-btn:disabled { opacity: .4; cursor: default; }
+  header .icon-btn:hover:disabled { background: none; }
+  header .icon-btn img { width: 16px; height: 16px; object-fit: contain; }
+  header #btnExecute { color: #16a34a; }
+  header #btnExecute:disabled { color: var(--text-dim); }
+  header #btnClear { font-size: 15px; }
+  header img.logo { width: 18px; height: 18px; }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; white-space: nowrap; }
+  header .status { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; }
+
+  main {
+    flex: 1 1 auto;
+    display: flex;
+    min-height: 0;
+  }
+  aside {
+    width: var(--aside-width, 270px);
+    flex: 0 0 auto;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-alt);
+  }
+  /* Thanh chia kéo-resize giữa aside/query-panel (chiều ngang, con trỏ col-resize) và giữa
+     #editor/#resultsWrap (chiều dọc, con trỏ row-resize) — xem setupDivider() ở <script> bên dưới.
+     Kéo ghi trực tiếp vào biến CSS --aside-width/--editor-height trên :root nên áp dụng đồng nhất
+     cho mọi tab (không phải per-tab state). */
+  .divider-v { flex: 0 0 auto; width: 5px; cursor: col-resize; background: transparent; }
+  .divider-v:hover, .divider-v.dragging { background: var(--accent); opacity: .4; }
+  .divider-h { flex: 0 0 auto; height: 5px; cursor: row-resize; background: transparent; }
+  .divider-h:hover, .divider-h.dragging { background: var(--accent); opacity: .4; }
+  aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin: 0; padding: 8px 10px 4px; }
+  aside .filter-row { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  aside input[type="text"] {
+    width: 100%;
+    padding: 6px 8px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 12px;
+  }
+  #tree { flex: 1 1 auto; overflow: auto; padding: 4px; font-size: 12.5px; }
+  #tree .empty { padding: 10px; color: var(--text-dim); }
+  .node { user-select: none; }
+  .node-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 6px;
+    border-radius: 5px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .node-row:hover { background: var(--border-soft); }
+  .node-row.active { background: var(--accent); color: var(--accent-fg); }
+  .node-row .caret {
+    display: inline-flex;
+    width: 12px;
+    height: 12px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    transition: transform .12s ease;
+  }
+  .node-row .caret svg { width: 10px; height: 10px; }
+  .node-row.active .caret { color: inherit; }
+  .node-row.expanded > .caret { transform: rotate(90deg); }
+  .node-row .icon { flex: 0 0 auto; font-size: 12px; opacity: .8; }
+  .node-row .icon.node-icon-img { width: 14px; height: 14px; opacity: 1; object-fit: contain; }
+  /* Icon connection Mongo cấp 1 to hơn các icon khác (18x18 thay vì 14x14, theo yêu cầu user
+     2026-08-05) — asset public/assets/mongodb.png cũng được xuất native ở 18x18 (không phải
+     upscale qua CSS từ file nhỏ hơn) để nét, không mờ. */
+  .node-row .icon.node-icon-img[src$="mongodb.png"] { width: 18px; height: 18px; }
+  .node-row .label { overflow: hidden; text-overflow: ellipsis; }
+  .node-row .col-type { color: var(--text-dim); font-size: 11px; margin-left: 4px; }
+  .node-row .copy-btn {
+    margin-left: auto;
+    flex: 0 0 auto;
+    padding: 1px 4px;
+    font-size: 12px;
+    opacity: 0;
+    border: none;
+    background: none;
+    border-radius: 4px;
+    color: inherit;
+    cursor: pointer;
+  }
+  .node-row:hover .copy-btn { opacity: .7; }
+  .node-row .copy-btn:hover { opacity: 1 !important; }
+  .node-row.active .copy-btn:hover { background: rgba(255,255,255,.25); }
+  .node-children { margin-left: 16px; }
+  .node-loading, .node-empty { padding: 3px 6px 3px 22px; color: var(--text-dim); font-size: 11.5px; font-style: italic; }
+  /* Dòng "Xem thêm" cuối 1 danh sách lazy-load (schema/database, table/collection, column) — xem
+     createLazyList(). Cùng convention "Xem thêm" của bảng kết quả tràn chữ (.cell-toggle). */
+  .node-more { padding: 3px 6px 3px 22px; color: var(--accent); font-size: 11.5px; cursor: pointer; }
+  .node-more:hover { text-decoration: underline; }
+
+  section.query-panel { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+
+  /* Thanh tab query — mỗi tab 1 EditorView + 1 result pane riêng (xem <script>, createTab()). Nút
+     "+" cuối danh sách tab mở dropdown 2 mục Query SQL/Query NoSQL, cùng convention .sm-icon-plus
+     của settings-modal (ký tự "+" trực tiếp, không tạo asset PNG mới). */
+  #tabBar { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); background: var(--bg-alt); flex: 0 0 auto; }
+  #tabList { display: flex; flex: 1 1 auto; min-width: 0; overflow-x: auto; }
+  .tab-item {
+    display: flex; align-items: center; gap: 6px; padding: 0 8px 0 10px;
+    border-right: 1px solid var(--border-soft); cursor: pointer; font-size: 12.5px;
+    white-space: nowrap; max-width: 220px; flex: 0 0 auto;
+  }
+  .tab-item:hover { background: var(--border-soft); }
+  .tab-item.active { background: var(--bg); border-bottom: 2px solid var(--accent); }
+  .tab-item .tab-icon { width: 14px; height: 14px; flex: 0 0 auto; object-fit: contain; }
+  .tab-item .tab-label { overflow: hidden; text-overflow: ellipsis; }
+  .tab-item .tab-close {
+    flex: 0 0 auto; border: none; background: none; cursor: pointer; color: var(--text-dim);
+    font-size: 13px; line-height: 1; padding: 3px; border-radius: 4px;
+  }
+  .tab-item .tab-close:hover { background: var(--border-soft); color: var(--text); }
+  .tab-item.active .tab-close:hover { background: var(--border); }
+  /* #btnNewTab nay nằm trong header .header-actions — dùng chung style "header .icon-btn"/
+     "header .icon-btn img" đã có sẵn (không cần CSS riêng nữa). .tab-new-wrap chỉ còn cần
+     position:relative để neo .dropdown-menu. */
+  .tab-new-wrap { position: relative; flex: 0 0 auto; display: flex; align-items: center; }
+  .dropdown-menu {
+    position: absolute; top: 100%; right: 0; margin-top: 2px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 5px; box-shadow: 0 4px 12px rgba(0,0,0,.15);
+    min-width: 150px; z-index: 50; padding: 4px;
+  }
+  .dropdown-menu[hidden] { display: none; }
+  .dropdown-menu button {
+    display: block; width: 100%; text-align: left; background: none; border: none;
+    padding: 7px 9px; border-radius: 4px; cursor: pointer; font-size: 12.5px; color: var(--text);
+  }
+  .dropdown-menu button:hover { background: var(--border-soft); }
+
+  #editor {
+    flex: 0 0 auto; height: var(--editor-height, 320px); min-height: 120px; max-height: 70vh;
+    overflow: hidden; border-bottom: 1px solid var(--border); display: flex; flex-direction: column;
+  }
+  .editor-pane { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  .editor-pane[hidden] { display: none; }
+  /* Không còn tự mở sẵn 1 tab lúc load trang (yêu cầu SRS — mặc định "SQL" sai lệch khi dùng nhiều
+     loại DB) — 2 placeholder này hiện khi tabs.length === 0 (xem updateEmptyState()), tránh màn
+     hình trắng trông như lỗi. */
+  .pane-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); font-size: 13px; text-align: center; padding: 20px; }
+  .pane-empty[hidden] { display: none; }
+  .cm-editor { height: 100%; font-size: 13px; }
+  /* CodeMirror 6 tự quản lý focus ring qua .cm-focused, bỏ outline mặc định trình duyệt để lại
+     ở đây (không dùng *:focus{outline:none} toàn trang — sẽ phá accessibility ở chỗ khác). */
+  .cm-editor.cm-focused { outline: none !important; }
+  /* Chữ hoa CHỈ HIỂN THỊ — thay cho auto-uppercase bằng JS (EditorState.transactionFilter) đã bỏ
+     hẳn vì bug nhân đôi ký tự khi gõ nhanh (xem CLAUDE.md mục "Giới hạn cần biết"). CSS không đụng
+     view.state.doc nên nội dung thật gửi lên server/copy-paste vẫn giữ nguyên hoa/thường đã gõ. */
+  #editor .cm-content { text-transform: uppercase; }
+  /* Mongo query (db.collection.find({...})) là JS, không phải SQL keyword — tắt uppercase-hiển-thị
+     khi tab đang dùng engine "mongo" (mỗi tab tự set class này trên .editor-pane của chính nó lúc
+     tạo/rebind — nhiều tab có thể khác engine cùng lúc, xem createTab()/bindTabToEnv()). */
+  .editor-pane.mongo-mode .cm-content { text-transform: none; }
+
+  /* Bỏ padding ngang để bảng tràn sát 2 mép query panel (giống editor/header) — phần text/pager
+     có padding riêng qua .results-meta-row/.pager-row để không dính sát mép. #resultsWrap chứa
+     nhiều .results-pane con (1 pane/tab, xem createTab()) — chỉ pane của tab active không có
+     [hidden] nên tự chiếm hết flex:1 1 auto của #resultsWrap, không cần position:absolute. */
+  #resultsWrap { flex: 1 1 auto; overflow: hidden; min-height: 0; display: flex; flex-direction: column; }
+  .results-pane { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .results-pane[hidden] { display: none; }
+  .results-meta-row { padding: 10px 12px 8px; flex: 0 0 auto; }
+  .resultsMeta { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+  .resultsMeta.error { color: var(--danger); background: var(--danger-bg); padding: 8px 10px; border-radius: 6px; }
+  .resultsTableWrap { flex: 1 1 auto; overflow: auto; }
+  table.result-table { border-collapse: collapse; font-size: 12px; width: 100%; }
+  table.result-table th, table.result-table td {
+    border: 1px solid var(--border);
+    padding: 4px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+  table.result-table th { background: var(--result-header-bg); color: #1b1f24; position: sticky; top: 0; white-space: nowrap; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+  table.result-table td { max-width: 360px; }
+  table.result-table td.cell-expanded { max-width: none; }
+  table.result-table td.null-value { color: var(--text-dim); font-style: italic; }
+  /* .cell-value giữ style truncate (thay vì đặt trực tiếp trên td) để có thể toggle riêng khi bấm
+     "Xem thêm" — xem setupExpandableCells(). */
+  table.result-table .cell-value {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+  table.result-table .cell-value.expanded {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    word-break: break-word;
+  }
+  table.result-table .cell-toggle {
+    display: block;
+    margin-top: 2px;
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+  }
+  table.result-table .cell-toggle:hover { text-decoration: underline; }
+  table.result-table td.stt-col, table.result-table th.stt-col {
+    background: var(--result-header-bg);
+    color: #1b1f24;
+    font-weight: 600;
+    text-align: center;
+    width: 1%;
+    white-space: nowrap;
+  }
+  table.result-table th.stt-col { position: sticky; left: 0; top: 0; z-index: 1; }
+  table.result-table td.stt-col { position: sticky; left: 0; }
+
+  .pager-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-dim);
+    flex: 0 0 auto;
+  }
+  .pager-row .icon-btn { font-size: 13px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+  .pager-row .icon-btn:hover { background: var(--border-soft); }
+  .pager-row .icon-btn:disabled { opacity: .4; cursor: default; }
+  .pager-row .icon-btn:hover:disabled { background: none; }
+
+  /* JSON tree — kết quả query MongoDB (thay bảng khi environment đang chọn là engine "mongo"), xem
+     public/vendor/json-tree.js. Mỗi document 1 khối riêng, cách nhau bằng border-bottom. */
+  .jsonResultsWrap { padding: 10px 12px; font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .json-doc { padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
+  .json-doc:last-child { border-bottom: none; }
+  .json-row { display: flex; align-items: baseline; gap: 2px; white-space: pre; }
+  .json-children { margin-left: 18px; }
+  .json-toggle { display: inline-block; width: 12px; color: var(--text-dim); user-select: none; }
+  .json-key { color: var(--text-dim); }
+  .json-bracket { color: var(--text-dim); font-style: italic; }
+  .json-value.json-string { color: #16a34a; }
+  .json-value.json-number { color: #2563eb; }
+  .json-value.json-boolean { color: #d97706; }
+  .json-value.json-null { color: var(--text-dim); font-style: italic; }
+  .json-value.json-objectId, .json-value.json-date { color: #7c3aed; }
+
+  /* Modal "Cấu hình" — markup/CSS/JS thật nằm ở public/shared/settings-modal.* (dùng chung với
+     scripts/wizard.html của quickstart, xem k8sctl/CLAUDE.md mục "Settings"), chỉ giữ overlay +
+     box wrapper ở đây. */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal-overlay[hidden] { display: none; }
+  .modal-box {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 5px; width: 768px; max-width: calc(100vw - 32px);
+    /* 270px = chiều ngang menu trái (aside) hiện tại — giá trị cố định, không đồng bộ theo
+       --aside-width nếu user kéo-resize sau này (xem #dividerH). */
+    min-height: 270px;
+    max-height: calc(100vh - 64px); overflow-y: auto;
+    box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  }
+</style>
+<link rel="stylesheet" href="/shared/settings-modal.css" />
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <img class="logo" src="/assets/sql.png" alt="" onerror="this.style.display='none'" />
+      <h1>K8SQL</h1>
+    </div>
+    <div class="header-right">
+      <div class="header-actions">
+        <button id="btnSettings" class="icon-btn" title="Cấu hình">⚙️</button>
+        <span class="divider"></span>
+        <button id="btnExecute" class="icon-btn" title="Execute (Ctrl+Enter)" disabled>▶</button>
+        <span class="divider"></span>
+        <button id="btnClear" class="icon-btn" title="Clear" disabled>🧹</button>
+        <span class="divider"></span>
+        <button id="btnImport" class="icon-btn" title="Import cấu hình kết nối"><img src="/assets/import.png" alt="" /></button>
+        <button id="btnExport" class="icon-btn" title="Export cấu hình kết nối"><img src="/assets/export.png" alt="" /></button>
+        <input type="file" id="importFileInput" accept="application/json" hidden />
+        <span class="divider"></span>
+        <div class="tab-new-wrap">
+          <button type="button" id="btnNewTab" class="icon-btn" title="Tab mới"><img src="/assets/plus.png" alt="" /></button>
+          <div id="newTabMenu" class="dropdown-menu" hidden>
+            <button type="button" data-engine="postgres">Query SQL</button>
+            <button type="button" data-engine="mongo">Query NoSQL</button>
+          </div>
+        </div>
+      </div>
+      <span class="status" id="toolbarStatus"></span>
+    </div>
+  </header>
+
+  <div class="modal-overlay" id="settingsModal" hidden>
+    <div class="modal-box" id="settingsModalMount"></div>
+  </div>
+  <main>
+    <aside>
+      <h2>Object Explorer</h2>
+      <div class="filter-row"><input type="text" id="treeFilter" placeholder="Nhập để tìm kiếm..." /></div>
+      <div id="tree"><div class="empty">Đang tải danh sách connection…</div></div>
+    </aside>
+    <div id="dividerH" class="divider-v" title="Kéo để đổi kích thước"></div>
+    <section class="query-panel">
+      <div id="tabBar">
+        <div id="tabList"></div>
+      </div>
+      <div id="editor">
+        <div id="editorEmpty" class="pane-empty">Chưa có tab truy vấn nào — bấm "+" ở góc trên để mở tab mới.</div>
+      </div>
+      <div id="dividerV" class="divider-h" title="Kéo để đổi chiều cao"></div>
+      <div id="resultsWrap">
+        <div id="resultsEmpty" class="pane-empty">Chưa có tab truy vấn nào.</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/vendor/json-tree.js"></script>
+  <script type="module">
+    // KHÔNG load CodeMirror qua CDN esm.sh (khác các bản trước đây trong file này) — bug thật đã
+    // gặp NHIỀU LẦN dù đã thử mọi cách pin/không-pin version: esm.sh resolve "@codemirror/state"/
+    // "@codemirror/view" ra NHIỀU INSTANCE khác nhau cho các package phụ thuộc lẫn nhau (chính
+    // CodeMirror tự báo lỗi "multiple instances of @codemirror/state are loaded, breaking
+    // instanceof checks" khi verify) — gây crash khi click/gõ (domAtPos/findPos), và gây bug tinh
+    // vi hơn: gõ nhanh 2 ký tự bị nhân đôi ký tự đầu (vd "SE"→"SSE") do plugin autocomplete nhìn
+    // thấy 1 state trung gian giữa 2 lần dispatch. Đã thử: không pin version, pin version, pin kèm
+    // ?deps= ép resolve chung — TẤT CẢ vẫn còn resolve ra nhiều instance (esm.sh không đảm bảo
+    // resolve nhất quán qua nhiều request riêng biệt, kể cả cùng URL). Fix triệt để: tự bundle
+    // CodeMirror (view+state+lang-sql+commands+codemirror) thành 1 file ESM DUY NHẤT, tự chứa,
+    // không còn multi-request nào tới CDN nên không thể có instance trùng lặp — xem
+    // public/vendor/codemirror.bundle.js + public/vendor/README.md (cách build lại khi cần nâng
+    // cấp version). Verify lại đầy đủ sau khi đổi: gõ nhanh nhiều ký tự không nhân đôi, click/gõ
+    // không crash, Enter khi đang autocomplete viết hoa đúng (không còn "select" chữ thường).
+    import {
+      EditorView, keymap, EditorState, Compartment, basicSetup, defaultKeymap, indentWithTab, sql, PostgreSQL,
+      javascript, autocompletion, CompletionContext
+    } from "/vendor/codemirror.bundle.js";
+    import { initSettingsModal } from "/shared/settings-modal.js";
+    import { MONGO_OPERATOR_COMPLETIONS } from "/vendor/mongo-operators.js";
+
+    const treeFilter = document.getElementById("treeFilter");
+    const treeEl = document.getElementById("tree");
+    const btnSettings = document.getElementById("btnSettings");
+    const btnExecute = document.getElementById("btnExecute");
+    const btnClear = document.getElementById("btnClear");
+    const btnExport = document.getElementById("btnExport");
+    const btnImport = document.getElementById("btnImport");
+    const importFileInput = document.getElementById("importFileInput");
+    const toolbarStatus = document.getElementById("toolbarStatus");
+    const settingsModal = document.getElementById("settingsModal");
+    const settingsModalMount = document.getElementById("settingsModalMount");
+    let settingsModalInited = false;
+    const editorContainerEl = document.getElementById("editor");
+    const resultsWrapEl = document.getElementById("resultsWrap");
+    const editorEmptyEl = document.getElementById("editorEmpty");
+    const resultsEmptyEl = document.getElementById("resultsEmpty");
+    const tabListEl = document.getElementById("tabList");
+    const btnNewTab = document.getElementById("btnNewTab");
+    const newTabMenu = document.getElementById("newTabMenu");
+    const dividerH = document.getElementById("dividerH");
+    const dividerV = document.getElementById("dividerV");
+
+    const PAGE_SIZE = 10;
+    // Số phần tử/trang khi lazy-load cây Object Explorer (schema/database, table/collection, column
+    // — xem createLazyList()) — khác PAGE_SIZE ở trên (10, dùng cho phân trang KẾT QUẢ query).
+    const PAGE_SIZE_TREE = 100;
+
+    // ---- Multi-tab state ----
+    // Mỗi tab sở hữu 1 EditorView + 1 result pane DOM riêng (không dùng 1 view/1 pane dùng chung
+    // đổi nội dung khi chuyển tab) — CM6 hỗ trợ tự nhiên nhiều instance từ cùng 1 bundle (bug
+    // "multiple instances of @codemirror/state" cũ chỉ xảy ra khi load qua CDN nhiều request riêng
+    // biệt, xem comment lớn phía trên — new EditorView() nhiều lần từ CÙNG 1 module đã import không
+    // liên quan bug đó), và giữ nguyên miễn phí undo history/cursor/scroll riêng từng tab. Số tab
+    // thực tế nhỏ nên chi phí DOM/memory không đáng lo.
+    const tabs = [];
+    let activeTabId = null;
+    let nextTabId = 1;
+    // Giữ lại kết quả /sql/environments (trước đây bị bỏ ngay sau khi truyền vào
+    // renderConnectionsInto) để findEnvByName() tra cứu khi bind/rebind tab hoặc chạy query.
+    let allEnvironments = [];
+
+    function getActiveTab() {
+      return tabs.find((t) => t.id === activeTabId) || null;
+    }
+
+    function findEnvByName(name) {
+      return allEnvironments.find((e) => e.name === name) || null;
+    }
+
+    function buildSchemaExtension(tables) {
+      // @codemirror/lang-sql tự phân tích câu lệnh + vị trí con trỏ để chọn đúng loại gợi ý dựa
+      // trên map này — không cần tự viết logic phân tích cú pháp riêng. Key dạng "schema.table"
+      // (KHÔNG đăng ký thêm tên bảng trần) được thư viện tự tách thành cây namespace lồng nhau —
+      // đã verify thật (Playwright) qua 3 bước: gõ "FROM r3s" gợi ý tên SCHEMA "r3svc" trước; gõ
+      // tiếp dấu "." (VD "r3svc.") gợi ý ĐÚNG danh sách bảng CỦA RIÊNG schema đó; chọn xong chèn ra
+      // "r3svc.account" đầy đủ, chạy được ngay không lỗi "relation does not exist". Đây chính là
+      // cơ chế "2 bước schema→table" user yêu cầu ban đầu — hoàn toàn native, không cần viết
+      // CompletionSource riêng. Trade-off ĐÃ CHẤP NHẬN: không gõ tắt được tên bảng trần khi chưa
+      // gõ tên schema (gõ "acc" không ra gợi ý gì, phải gõ "r3svc." trước) — đổi lại loại bỏ hoàn
+      // toàn khả năng lỡ chọn gợi ý tên trần rồi chạy lỗi thiếu schema (bug thật đã gặp 2 lần khi
+      // còn đăng ký cả 2 key, xem docs/team-notes.md ở root workspace).
+      const schema = {};
+      for (const table of tables) {
+        const columnNames = table.columns.map((c) => c.name);
+        schema[`${table.schema}.${table.name}`] = columnNames;
+      }
+      return sql({ dialect: PostgreSQL, schema, upperCaseKeywords: true });
+    }
+
+    // Autocomplete field thật cho Mongo (quyết định đã chốt với user — đầu tư sâu hơn cú pháp JS
+    // suông): không có sẵn 1 "Mongo shell mode" cho CodeMirror như @codemirror/lang-sql tự phân tích
+    // FROM/alias., nên tự viết 1 completion source đơn giản — dò "db.<collection>." ngay trước con
+    // trỏ (best-effort bằng regex, không phải parser JS đầy đủ) để biết đang gõ trong ngữ cảnh
+    // collection nào, rồi gợi ý field thật của collection đó (lấy từ GET /sql/autocomplete-schema)
+    // cộng với tên mọi collection (để gõ tắt "db.<tab>" chọn collection).
+    function buildMongoCompletionSource(collections) {
+      const fieldsByCollection = new Map(collections.map((col) => [col.name, col.fields.map((f) => f.name)]));
+      return (context) => {
+        const word = context.matchBefore(/[$\w]*/);
+        if (!word || (word.from === word.to && !context.explicit)) {
+          return null;
+        }
+        // Tìm pattern "db.<collection>." GẦN NHẤT trước con trỏ (không chỉ ngay sát con trỏ) — cần
+        // thiết vì lúc gõ tên field bên trong "db.people.find({na" thì "db.people." đứng cách con
+        // trỏ vài ký tự (qua "find({"), không phải ngay trước — regex neo "$" ở cuối chuỗi sẽ KHÔNG
+        // khớp trường hợp này (bug thật đã gặp khi verify bằng Playwright, xem k8sctl/CLAUDE.md).
+        const textBefore = context.state.sliceDoc(0, context.pos);
+        const collectionMatches = [...textBefore.matchAll(/db\.(\w+)\./g)];
+        const collectionName = collectionMatches.length ? collectionMatches[collectionMatches.length - 1][1] : null;
+        const fieldNames = collectionName ? fieldsByCollection.get(collectionName) || [] : [];
+        const options = [
+          ...fieldNames.map((name) => ({ label: name, type: "property" })),
+          ...collections.map((col) => ({ label: col.name, type: "class" })),
+          // Cú pháp constructor kiểu mongosh mà services/providers/mongo/query.js::
+          // translateShellConstructors() dịch sang Extended JSON — gợi ý ở đây để user biết 2
+          // hàm này được hỗ trợ (không phải JS thật, chỉ là cú pháp riêng của k8sctl).
+          { label: "ObjectId", type: "function", detail: 'ObjectId("<24 hex>")' },
+          { label: "ISODate", type: "function", detail: 'ISODate("<ISO 8601>")' },
+          // $operator MongoDB thật (aggregation stage/expression) — xem public/vendor/mongo-operators.js
+          // để biết nguồn gốc dữ liệu (copy tĩnh từ @mongosh/autocomplete, không cài package đó).
+          ...MONGO_OPERATOR_COMPLETIONS.map((op) => ({
+            label: op.name,
+            type: op.category === "stage" ? "keyword" : "function",
+            detail: op.category === "stage" ? "aggregate stage" : "expression operator"
+          }))
+        ];
+        return { from: word.from, options };
+      };
+    }
+
+    function buildMongoExtension(collections) {
+      return [javascript(), autocompletion({ override: [buildMongoCompletionSource(collections)] })];
+    }
+
+    // Execute cần cả tab active đã bind environment LẪN có nội dung; Clear chỉ cần có nội dung
+    // (không phụ thuộc đã bind environment hay chưa — có thể gõ SQL trước khi chọn connection).
+    function refreshToolbarState() {
+      const tab = getActiveTab();
+      const hasContent = !!tab && tab.view.state.doc.length > 0;
+      btnExecute.disabled = !(tab && tab.boundEnvName && hasContent);
+      btnClear.disabled = !hasContent;
+    }
+
+    async function fetchJson(url, options) {
+      const response = await fetch(url, options);
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !body?.success) {
+        throw new Error(body?.message || `HTTP ${response.status}`);
+      }
+      return body.data;
+    }
+
+    // bindTabToEnv — gán 1 tab vào 1 connection thật: đổi ngôn ngữ editor + tải autocomplete schema
+    // riêng cho tab đó (mỗi tab có Compartment/EditorView độc lập, xem createTab()). Thay cho
+    // selectEnvironment() cũ vốn thao tác trên 1 view/activeEnv module-level duy nhất.
+    async function bindTabToEnv(tab, env) {
+      tab.boundEnvName = env.name;
+      tab.engineType = env.engine;
+      tab.activeMongoDatabase = null;
+      tab.editorPaneEl.classList.toggle("mongo-mode", env.engine === "mongo");
+      updateTabButton(tab);
+      if (tab.id === activeTabId) {
+        refreshToolbarState();
+        refreshTreeHighlight();
+        toolbarStatus.textContent = "Đang tải autocomplete schema…";
+      }
+      // Chuyển ngôn ngữ editor NGAY (không chờ fetch schema) — nếu chỉ reconfigure trong nhánh
+      // try thành công, 1 connection Mongo không có database mặc định trong connection string sẽ
+      // luôn 400 ở bước fetch (xem "Giới hạn cần biết"), rơi vào catch mà KHÔNG BAO GIỜ rời khỏi
+      // sql(PostgreSQL) ban đầu — bug thật đã gặp: toàn bộ session Mongo bị dính completion
+      // PostgreSQL (occurrences_regex, octet_length...) vì compartment chưa từng đổi sang
+      // javascript(). Gợi ý field/collection thật (cần dữ liệu fetch) nâng cấp thêm bên dưới nếu
+      // fetch thành công — ObjectId/ISODate/$operator vẫn có ngay cả khi fetch lỗi.
+      if (env.engine === "mongo") {
+        tab.view.dispatch({ effects: tab.sqlLanguageCompartment.reconfigure(buildMongoExtension([])) });
+      }
+      try {
+        const data = await fetchJson(`/sql/autocomplete-schema?env=${encodeURIComponent(env.name)}`);
+        if (env.engine === "mongo") {
+          const collections = data.collections || [];
+          tab.view.dispatch({ effects: tab.sqlLanguageCompartment.reconfigure(buildMongoExtension(collections)) });
+          if (tab.id === activeTabId) toolbarStatus.textContent = `${collections.length} collection (autocomplete).`;
+        } else {
+          const tables = data.tables || [];
+          tab.view.dispatch({ effects: tab.sqlLanguageCompartment.reconfigure(buildSchemaExtension(tables)) });
+          if (tab.id === activeTabId) toolbarStatus.textContent = `${tables.length} bảng (autocomplete).`;
+        }
+      } catch (error) {
+        if (tab.id === activeTabId) toolbarStatus.textContent = `Lỗi tải autocomplete schema: ${error.message}`;
+      }
+    }
+
+    // Nội dung editor của 1 tab ĐÃ bound bị xoá về rỗng (gõ tay hoặc bấm Clear) → tab "quên" connect
+    // string/table cụ thể, chỉ còn nhớ loại DB (engineType) — yêu cầu SRS. Transition 1 chiều, chỉ
+    // kích hoạt khi tab đang bound mà thành rỗng (không lặp lại khi đã type-only).
+    function handleTabDocChanged(tab) {
+      if (tab.boundEnvName && tab.view.state.doc.length === 0) {
+        tab.boundEnvName = null;
+        tab.activeMongoDatabase = null;
+        updateTabButton(tab);
+        if (tab.id === activeTabId) refreshTreeHighlight();
+      }
+    }
+
+    function createTabButton(tab) {
+      const el = document.createElement("div");
+      el.className = "tab-item";
+      el.dataset.tabId = tab.id;
+      const icon = document.createElement("img");
+      icon.className = "tab-icon";
+      icon.alt = "";
+      const label = document.createElement("span");
+      label.className = "tab-label";
+      const closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "tab-close";
+      closeBtn.title = "Đóng tab";
+      closeBtn.textContent = "×";
+      el.appendChild(icon);
+      el.appendChild(label);
+      el.appendChild(closeBtn);
+      el.addEventListener("click", () => activateTab(tab.id));
+      closeBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        closeTab(tab.id);
+      });
+      tab.buttonEl = el;
+      tab.iconEl = icon;
+      tab.labelEl = label;
+      updateTabButton(tab);
+      return el;
+    }
+
+    function updateTabButton(tab) {
+      tab.iconEl.src = tab.engineType === "mongo" ? "/assets/mongodb.png" : "/assets/database.png";
+      tab.labelEl.textContent = tab.title;
+    }
+
+    // Tra cứu node cấp 1 trong cây theo tên connection để đồng bộ highlight .node-row.active theo
+    // tab active (populate ở renderConnectionsInto()) — trước đây 1-1 với activeEnv module-level,
+    // giờ mỗi tab có thể bound khác connection nên phải cập nhật lại mỗi khi đổi tab.
+    const level1RowsByEnvName = new Map();
+    function refreshTreeHighlight() {
+      document.querySelectorAll(".node-row.active").forEach((el) => el.classList.remove("active"));
+      const tab = getActiveTab();
+      if (!tab || !tab.boundEnvName) return;
+      const row = level1RowsByEnvName.get(tab.boundEnvName);
+      if (row) row.classList.add("active");
+    }
+
+    function updateEmptyState() {
+      const hasTabs = tabs.length > 0;
+      editorEmptyEl.hidden = hasTabs;
+      resultsEmptyEl.hidden = hasTabs;
+    }
+
+    function createTab({ engineType, boundEnvName = null, title }) {
+      const id = `tab-${nextTabId++}`;
+
+      const editorPaneEl = document.createElement("div");
+      editorPaneEl.className = "editor-pane";
+      editorPaneEl.dataset.tabId = id;
+      editorPaneEl.hidden = true;
+      editorContainerEl.appendChild(editorPaneEl);
+
+      const sqlLanguageCompartment = new Compartment();
+      const tab = {
+        id, engineType, boundEnvName, activeMongoDatabase: null, title,
+        view: null, editorPaneEl, sqlLanguageCompartment,
+        currentQuerySql: null, lastResultData: null,
+        resultEls: null, resultsPaneEl: null, buttonEl: null, iconEl: null, labelEl: null
+      };
+
+      const view = new EditorView({
+        state: EditorState.create({
+          doc: "",
+          extensions: [
+            basicSetup, // đã bao gồm completionKeymap (Ctrl-Space -> startCompletion)
+            keymap.of([...defaultKeymap, indentWithTab]),
+            sqlLanguageCompartment.of(sql({ dialect: PostgreSQL })),
+            keymap.of([
+              {
+                key: "Ctrl-Enter",
+                mac: "Cmd-Enter",
+                run: () => {
+                  runQuery(tab);
+                  return true;
+                }
+              }
+            ]),
+            EditorView.updateListener.of((update) => {
+              if (update.docChanged) {
+                handleTabDocChanged(tab);
+                if (tab.id === activeTabId) refreshToolbarState();
+              }
+            })
+          ]
+        }),
+        parent: editorPaneEl
+      });
+      tab.view = view;
+      editorPaneEl.classList.toggle("mongo-mode", engineType === "mongo");
+
+      const resultsPaneEl = document.createElement("div");
+      resultsPaneEl.className = "results-pane";
+      resultsPaneEl.dataset.tabId = id;
+      resultsPaneEl.hidden = true;
+      resultsPaneEl.innerHTML =
+        '<div class="results-meta-row"><div class="resultsMeta">Chưa có kết quả.</div></div>' +
+        '<div class="pagerRow"></div>' +
+        '<div class="resultsTableWrap"></div>' +
+        '<div class="jsonResultsWrap" hidden></div>';
+      resultsWrapEl.appendChild(resultsPaneEl);
+      tab.resultsPaneEl = resultsPaneEl;
+      tab.resultEls = {
+        resultsMeta: resultsPaneEl.querySelector(".resultsMeta"),
+        resultsTableWrap: resultsPaneEl.querySelector(".resultsTableWrap"),
+        jsonResultsWrap: resultsPaneEl.querySelector(".jsonResultsWrap"),
+        pagerRow: resultsPaneEl.querySelector(".pagerRow")
+      };
+
+      tabListEl.appendChild(createTabButton(tab));
+      tabs.push(tab);
+      updateEmptyState();
+
+      if (boundEnvName) {
+        const env = findEnvByName(boundEnvName);
+        if (env) bindTabToEnv(tab, env);
+      } else if (engineType === "mongo") {
+        // Tab type-only Mongo vẫn cần ngôn ngữ JS + ObjectId/ISODate/$operator ngay từ đầu (không
+        // phụ thuộc dữ liệu fetch autocomplete-schema, xem buildMongoExtension([])).
+        view.dispatch({ effects: sqlLanguageCompartment.reconfigure(buildMongoExtension([])) });
+      }
+
+      return tab;
+    }
+
+    function activateTab(id) {
+      const prev = getActiveTab();
+      if (prev) {
+        prev.editorPaneEl.hidden = true;
+        prev.resultsPaneEl.hidden = true;
+        prev.buttonEl.classList.remove("active");
+      }
+      activeTabId = id;
+      const next = getActiveTab();
+      if (!next) return;
+      next.editorPaneEl.hidden = false;
+      next.resultsPaneEl.hidden = false;
+      next.buttonEl.classList.add("active");
+      refreshToolbarState();
+      refreshTreeHighlight();
+      next.view.focus();
+    }
+
+    function closeTab(id) {
+      const idx = tabs.findIndex((t) => t.id === id);
+      if (idx === -1) return;
+      const [tab] = tabs.splice(idx, 1);
+      tab.editorPaneEl.remove();
+      tab.resultsPaneEl.remove();
+      tab.buttonEl.remove();
+      tab.view.destroy();
+      if (activeTabId === id) {
+        const fallback = tabs[idx] || tabs[idx - 1] || null;
+        if (fallback) {
+          activateTab(fallback.id);
+        } else {
+          // Đóng tab cuối cùng → về đúng trạng thái ban đầu (0 tab), KHÔNG tự tạo lại tab SQL mặc
+          // định nữa (cùng lý do bỏ auto-mở-sẵn-tab-SQL lúc load trang — mặc định SQL sai lệch khi
+          // dùng nhiều loại DB).
+          activeTabId = null;
+          refreshToolbarState();
+          refreshTreeHighlight();
+        }
+      }
+      updateEmptyState();
+    }
+
+    // Luôn mở TAB MỚI, không đè nội dung tab đang active (yêu cầu SRS — khác hành vi cũ chèn thẳng
+    // vào view module-level duy nhất).
+    function openTableQueryTab(envName, schema, table) {
+      const statement = `SELECT * FROM ${schema}.${table} LIMIT 100;`;
+      const tab = createTab({ engineType: "postgres", boundEnvName: envName, title: table });
+      tab.view.dispatch({ changes: { from: 0, to: tab.view.state.doc.length, insert: statement } });
+      activateTab(tab.id);
+      return tab;
+    }
+
+    // databaseName ở đây là tên database Mongo (tham số "schema" dùng chung tên biến xuyên suốt cây
+    // Object Explorer cho cả 2 engine — level 2 luôn gọi là "schemaName" bất kể ý nghĩa thật là
+    // schema Postgres hay database Mongo). Ghi nhớ vào tab.activeMongoDatabase để runQuery() biết
+    // gửi đúng database khi Execute (Mongo query text KHÔNG tự mang tên database như "schema.table"
+    // của SQL). Đặt SAU createTab() để không bị bindTabToEnv() (gọi trong createTab) reset về null.
+    function openMongoQueryTab(envName, databaseName, collectionName) {
+      const statement = `db.${collectionName}.find({})`;
+      const tab = createTab({ engineType: "mongo", boundEnvName: envName, title: collectionName });
+      tab.activeMongoDatabase = databaseName;
+      tab.view.dispatch({ changes: { from: 0, to: tab.view.state.doc.length, insert: statement } });
+      activateTab(tab.id);
+      return tab;
+    }
+
+    // ---- Cây Object Explorer 4 cấp, tải lười từng cấp khi expand + phân trang từng cấp (trừ cấp 1
+    // "connections" — số lượng nhỏ, không cần) ----
+    // Cấp 1: connections (GET /sql/environments) — cũng đồng thời là "chọn environment đang active".
+    // Cấp 2: schemas    (GET /sql/schemas?env=&page=&pageSize=)
+    // Cấp 3: tables     (GET /sql/tables?env=&schema=&page=&pageSize=)
+    // Cấp 4: columns    (GET /sql/columns?env=&schema=&table=&page=&pageSize=)
+    // Mỗi API trả {page, pageSize, totalRows, totalPages, rows} — xem createLazyList() (tải 100
+    // phần tử/trang, thêm dòng "Xem thêm" khi còn trang sau). Postgres phân trang THẬT ở tầng DB
+    // (LIMIT/OFFSET); Mongo listDatabases()/listCollections() không có tham số skip/limit ở server
+    // (đã verify trực tiếp trong driver mongodb) nên vẫn lấy full mảng rồi cắt trang trong Node —
+    // vẫn giảm chi phí render phía client dù không giảm được chi phí truy vấn DB như Postgres, xem
+    // services/providers/mongo/schema.js.
+    // Cache theo Map trong session để tránh refetch khi CÂY BỊ DỰNG LẠI TỪ ĐẦU (vd sau import cấu
+    // hình, applyImportedConfig() gọi .clear() cả 3) — bản thân collapse/expand 1 node không cần
+    // cache nhờ cờ `loaded` sẵn có trong makeExpandableNode().
+    const schemaCache = new Map(); // envName -> {rows, page, totalPages}
+    const tableCache = new Map(); // `${envName}::${schema}` -> {rows, page, totalPages}
+    const columnCache = new Map(); // `${envName}::${schema}::${table}` -> {rows, page, totalPages}
+
+    function createNodeRow({ icon, label, extra, hasChildren, level }) {
+      const row = document.createElement("div");
+      row.className = "node-row";
+      row.dataset.level = level;
+      if (hasChildren) {
+        const caret = document.createElement("span");
+        caret.className = "caret";
+        // Chevron nét mảnh (không phải tam giác đặc ▶) — xoay 90° khi expand qua
+        // .node-row.expanded > .caret { transform: rotate(90deg) } đã có sẵn.
+        caret.innerHTML =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+        row.appendChild(caret);
+      } else {
+        const spacer = document.createElement("span");
+        spacer.className = "caret";
+        row.appendChild(spacer);
+      }
+      let iconEl;
+      if (typeof icon === "string" && icon.startsWith("img:")) {
+        iconEl = document.createElement("img");
+        iconEl.className = "icon node-icon-img";
+        iconEl.src = icon.slice(4);
+        iconEl.alt = "";
+      } else {
+        iconEl = document.createElement("span");
+        iconEl.className = "icon";
+        iconEl.textContent = icon;
+      }
+      row.appendChild(iconEl);
+      const labelEl = document.createElement("span");
+      labelEl.className = "label";
+      labelEl.textContent = label;
+      row.appendChild(labelEl);
+      if (extra) {
+        const extraEl = document.createElement("span");
+        extraEl.className = "col-type";
+        extraEl.textContent = extra;
+        row.appendChild(extraEl);
+      }
+      // Icon copy tên — cho mọi cấp kể cả connection gốc (level 1). stopPropagation() bắt buộc để
+      // không kích hoạt luôn click/dblclick của .node-row (expand cây / chèn SELECT).
+      if (level >= 1) {
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.className = "icon-btn copy-btn";
+        copyBtn.title = `Copy "${label}"`;
+        copyBtn.textContent = "⧉";
+        copyBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          navigator.clipboard.writeText(label).then(() => {
+            copyBtn.textContent = "✓";
+            setTimeout(() => {
+              copyBtn.textContent = "⧉";
+            }, 1000);
+          });
+        });
+        row.appendChild(copyBtn);
+      }
+      return row;
+    }
+
+    // Trình duyệt LUÔN bắn 2 sự kiện "click" trước "dblclick" cho 1 thao tác double-click thật
+    // (mousedown/up ×2 rồi mới dblclick) — trước đây vô hại vì onClick chỉ ghi đè nội dung editor
+    // (gọi lại nhiều lần không sao), nhưng giờ onClick mở TAB MỚI nên gọi thẳng ở mỗi "click" sẽ mở
+    // dư 2 tab thừa cho 1 lần double-click thật (bug đã gặp). Debounce ~250ms: click chờ xem có
+    // click thứ 2 tới không trong khoảng đó, dblclick tới trước thì huỷ, chỉ chạy đúng onDblClick.
+    // Node không có onDblClick (vd cột) thì chạy onClick ngay, không cần debounce.
+    function bindClickHandlers(row, { onClick, onDblClick }) {
+      if (!onDblClick) {
+        if (onClick) row.addEventListener("click", onClick);
+        return;
+      }
+      let clickTimer = null;
+      row.addEventListener("click", () => {
+        if (clickTimer) clearTimeout(clickTimer);
+        clickTimer = setTimeout(() => {
+          clickTimer = null;
+          if (onClick) onClick();
+        }, 250);
+      });
+      row.addEventListener("dblclick", () => {
+        if (clickTimer) {
+          clearTimeout(clickTimer);
+          clickTimer = null;
+        }
+        onDblClick();
+      });
+    }
+
+    function makeExpandableNode({ level, icon, label, extra, loadChildren, onActivate, onDblClick }) {
+      const node = document.createElement("div");
+      node.className = "node";
+      const row = createNodeRow({ icon, label, extra, hasChildren: true, level });
+      node.appendChild(row);
+
+      const childrenWrap = document.createElement("div");
+      childrenWrap.className = "node-children";
+      childrenWrap.style.display = "none";
+      node.appendChild(childrenWrap);
+
+      let loaded = false;
+
+      async function expand() {
+        row.classList.add("expanded");
+        childrenWrap.style.display = "";
+        if (loaded) {
+          return;
+        }
+        loaded = true;
+        // Đếm giây khi đang tải — connection mode k8s-tunnel lần đầu (chưa có tunnel mở sẵn) có thể
+        // mất tới ~30s tạo jump pod (xem services/providers/dbtunnel-core.js::POD_READY_TIMEOUT_MS),
+        // không đếm giây user dễ tưởng UI đứng hình. Chỉ ảnh hưởng UI, không đụng logic tunnel.
+        const loadingEl = document.createElement("div");
+        loadingEl.className = "node-loading";
+        loadingEl.textContent = "Đang tải…";
+        childrenWrap.innerHTML = "";
+        childrenWrap.appendChild(loadingEl);
+        const startedAt = Date.now();
+        const tickTimer = setInterval(() => {
+          const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+          loadingEl.textContent = elapsed > 0 ? `Đang tải… (${elapsed}s)` : "Đang tải…";
+        }, 1000);
+        try {
+          await loadChildren(childrenWrap);
+        } catch (error) {
+          childrenWrap.innerHTML = `<div class="node-empty">Lỗi: ${error.message}</div>`;
+        } finally {
+          clearInterval(tickTimer);
+        }
+      }
+
+      function collapse() {
+        row.classList.remove("expanded");
+        childrenWrap.style.display = "none";
+      }
+
+      function handleSingleClick() {
+        if (onActivate) {
+          onActivate();
+        }
+        if (row.classList.contains("expanded")) {
+          collapse();
+        } else {
+          expand();
+        }
+      }
+
+      bindClickHandlers(row, { onClick: handleSingleClick, onDblClick });
+
+      return node;
+    }
+
+    function makeLeafNode({ level, icon, label, extra, onClick, onDblClick }) {
+      const node = document.createElement("div");
+      node.className = "node";
+      const row = createNodeRow({ icon, label, extra, hasChildren: false, level });
+      bindClickHandlers(row, { onClick, onDblClick });
+      node.appendChild(row);
+      return node;
+    }
+
+    // createLazyList — tải + render 1 danh sách con trong childWrap THEO TỪNG TRANG (mặc định 100
+    // phần tử/trang qua PAGE_SIZE_TREE), thêm dòng "Xem thêm" ở cuối khi API báo còn trang sau —
+    // dùng chung cho cả 3 cấp (schema/database, table/collection, column), thay cho pattern cũ
+    // "fetch 1 lần lấy hết mảng → render toàn bộ". `cacheMap`/`cacheKey` (1 trong 3 Map
+    // schemaCache/tableCache/columnCache) lưu lại {rows, page, totalPages} tích luỹ — chỉ thật sự
+    // cần khi CÂY BỊ DỰNG LẠI TỪ ĐẦU (vd sau import cấu hình), vì bản thân 1 node instance không bị
+    // huỷ khi collapse/expand (cờ `loaded` trong makeExpandableNode() đã tự chặn refetch).
+    // `fetchPage(page)` gọi đúng 1 endpoint /sql/schemas|tables|columns, trả {rows, page, totalPages}
+    // (đúng shape dispatcher services/db.service.js trả). `renderItem(item)` tạo 1 DOM node cho 1
+    // phần tử — TỰ chịu trách nhiệm gắn onClick/onDblClick/loadChildren riêng (tái dùng nguyên
+    // makeExpandableNode()/makeLeafNode() như trước, chỉ tách khỏi vòng lặp render-cả-mảng).
+    async function createLazyList(childWrap, { cacheMap, cacheKey, fetchPage, renderItem, emptyMessage }) {
+      // KHÔNG childWrap.innerHTML="" ngay ở đây — caller (makeExpandableNode()'s expand()) đã đặt
+      // sẵn placeholder "Đang tải… (Ns)" (đếm giây) trước khi gọi loadChildren(); chỉ xoá placeholder
+      // đó tại đúng thời điểm có dữ liệu thật để hiện (empty message hoặc batch đầu tiên) — xoá sớm
+      // sẽ làm mất bộ đếm giây ngay khi request đầu (page 1) còn đang chờ (case chậm nhất — connection
+      // k8s-tunnel lần đầu tới ~30s, xem POD_READY_TIMEOUT_MS).
+      function removeMoreRow() {
+        const existing = childWrap.querySelector(".node-more");
+        if (existing) existing.remove();
+      }
+
+      function addMoreRow(onClick) {
+        removeMoreRow();
+        const moreRow = document.createElement("div");
+        moreRow.className = "node-more";
+        moreRow.textContent = "Xem thêm…";
+        moreRow.addEventListener("click", onClick);
+        childWrap.appendChild(moreRow);
+      }
+
+      async function handleMore(state) {
+        removeMoreRow();
+        const loadingRow = document.createElement("div");
+        loadingRow.className = "node-loading";
+        loadingRow.textContent = "Đang tải…";
+        childWrap.appendChild(loadingRow);
+        try {
+          const data = await fetchPage(state.page + 1);
+          loadingRow.remove();
+          for (const item of data.rows) {
+            childWrap.appendChild(renderItem(item));
+            state.rows.push(item);
+          }
+          state.page = data.page;
+          state.totalPages = data.totalPages;
+          if (state.page < state.totalPages) addMoreRow(() => handleMore(state));
+        } catch (error) {
+          loadingRow.className = "node-empty";
+          loadingRow.textContent = `Lỗi: ${error.message}`;
+        }
+      }
+
+      const cached = cacheMap.get(cacheKey);
+      if (cached) {
+        childWrap.innerHTML = "";
+        if (!cached.rows.length) {
+          childWrap.innerHTML = `<div class="node-empty">${emptyMessage}</div>`;
+          return;
+        }
+        for (const item of cached.rows) childWrap.appendChild(renderItem(item));
+        if (cached.page < cached.totalPages) addMoreRow(() => handleMore(cached));
+        return;
+      }
+
+      const data = await fetchPage(1);
+      const state = { rows: data.rows.slice(), page: data.page, totalPages: data.totalPages };
+      cacheMap.set(cacheKey, state);
+      childWrap.innerHTML = "";
+      if (!data.rows.length) {
+        childWrap.innerHTML = `<div class="node-empty">${emptyMessage}</div>`;
+        return;
+      }
+      for (const item of data.rows) childWrap.appendChild(renderItem(item));
+      if (state.page < state.totalPages) addMoreRow(() => handleMore(state));
+    }
+
+    function renderColumnsInto(wrap, envName, schemaName, tableName) {
+      return createLazyList(wrap, {
+        cacheMap: columnCache,
+        cacheKey: `${envName}::${schemaName}::${tableName}`,
+        fetchPage: (page) =>
+          fetchJson(
+            `/sql/columns?env=${encodeURIComponent(envName)}&schema=${encodeURIComponent(schemaName)}&table=${encodeURIComponent(tableName)}&page=${page}&pageSize=${PAGE_SIZE_TREE}`
+          ),
+        renderItem: (col) =>
+          makeLeafNode({
+            level: 4,
+            icon: "img:/assets/columns.png",
+            label: col.column_name,
+            extra: col.data_type
+          }),
+        emptyMessage: "Không có cột."
+      });
+    }
+
+    // Mongo: cấp 3 là danh sách COLLECTION — không có cấp 4 (schemaless, xem mota.md), nên dùng LEAF
+    // node (không caret/expand) thay vì makeExpandableNode. Single click MỞ TAB MỚI chứa câu query
+    // (không chạy), double click mở tab mới + chạy ngay — GIỮ NHẤT QUÁN với hành vi Postgres (quyết
+    // định đã chốt với user, không theo sát nghĩa đen "chỉ double-click mới có việc" của mota.md).
+    // Luôn mở tab mới, KHÔNG đè nội dung tab đang active (yêu cầu SRS multi-tab).
+    function renderMongoCollectionsInto(wrap, envName, databaseName) {
+      return createLazyList(wrap, {
+        cacheMap: tableCache,
+        cacheKey: `${envName}::${databaseName}`,
+        fetchPage: (page) =>
+          fetchJson(
+            `/sql/tables?env=${encodeURIComponent(envName)}&schema=${encodeURIComponent(databaseName)}&page=${page}&pageSize=${PAGE_SIZE_TREE}`
+          ),
+        renderItem: (collectionName) =>
+          makeLeafNode({
+            level: 3,
+            icon: "img:/assets/table.png",
+            label: collectionName,
+            onClick: () => openMongoQueryTab(envName, databaseName, collectionName),
+            onDblClick: () => {
+              const tab = openMongoQueryTab(envName, databaseName, collectionName);
+              runQuery(tab);
+            }
+          }),
+        emptyMessage: "Không có collection."
+      });
+    }
+
+    function renderTablesInto(wrap, envName, schemaName, engine) {
+      if (engine === "mongo") {
+        return renderMongoCollectionsInto(wrap, envName, schemaName);
+      }
+      return createLazyList(wrap, {
+        cacheMap: tableCache,
+        cacheKey: `${envName}::${schemaName}`,
+        fetchPage: (page) =>
+          fetchJson(
+            `/sql/tables?env=${encodeURIComponent(envName)}&schema=${encodeURIComponent(schemaName)}&page=${page}&pageSize=${PAGE_SIZE_TREE}`
+          ),
+        renderItem: (tableName) =>
+          makeExpandableNode({
+            level: 3,
+            icon: "img:/assets/table.png",
+            label: tableName,
+            loadChildren: (childWrap) => renderColumnsInto(childWrap, envName, schemaName, tableName),
+            onActivate: () => openTableQueryTab(envName, schemaName, tableName),
+            // Double-click: mở tab mới chứa câu SELECT VÀ chạy Execute ngay (khác click đơn chỉ mở
+            // tab) — chạy trên đúng tab vừa tạo, luôn về trang 1.
+            onDblClick: () => {
+              const tab = openTableQueryTab(envName, schemaName, tableName);
+              runQuery(tab);
+            }
+          }),
+        emptyMessage: "Không có bảng."
+      });
+    }
+
+    // Mongo: cấp 2 là danh sách DATABASE — icon giữ NGUYÊN "database.png" của Postgres (yêu cầu tường
+    // minh trong mota.md, không dùng icon riêng cho cấp này).
+    function renderSchemasInto(wrap, envName, engine) {
+      return createLazyList(wrap, {
+        cacheMap: schemaCache,
+        cacheKey: envName,
+        fetchPage: (page) =>
+          fetchJson(`/sql/schemas?env=${encodeURIComponent(envName)}&page=${page}&pageSize=${PAGE_SIZE_TREE}`),
+        renderItem: (schemaName) =>
+          makeExpandableNode({
+            level: 2,
+            icon: engine === "mongo" ? "img:/assets/database.png" : "img:/assets/schema.png",
+            label: schemaName,
+            loadChildren: (childWrap) => renderTablesInto(childWrap, envName, schemaName, engine)
+          }),
+        emptyMessage: engine === "mongo" ? "Không có database." : "Không có schema."
+      });
+    }
+
+    function renderConnectionsInto(environments) {
+      treeEl.innerHTML = "";
+      if (!environments.length) {
+        treeEl.innerHTML = '<div class="empty">Chưa có connection nào trong config/db-environments.json.</div>';
+        return;
+      }
+      for (const env of environments) {
+        const node = makeExpandableNode({
+          level: 1,
+          icon: env.engine === "mongo" ? "img:/assets/mongodb.png" : "img:/assets/database.png",
+          // Ưu tiên hiển thị description (nếu user đã điền ở popup Cấu hình) — env.name (đóng vai
+          // trò tương đương "connectionStringEnvVar", server không bao giờ trả field đó ra client,
+          // xem CLAUDE.md) làm fallback khi chưa có description.
+          label: env.description?.trim() ? env.description : env.name,
+          loadChildren: (childWrap) => renderSchemasInto(childWrap, env.name, env.engine),
+          // Click connection cấp 1 KHÔNG BAO GIỜ mở tab mới (khác hành vi click table/collection
+          // cấp 3 — luôn mở tab mới) — chỉ đổi connection đang gán cho TAB ĐANG ACTIVE, kể cả khi
+          // tab đó đang bound sẵn 1 connection khác (yêu cầu user 2026-08-07, thay bảng quyết định
+          // cũ vốn mở tab mới nếu tab active đang bound). Chỉ tạo tab mới khi thật sự chưa có tab
+          // nào (0 tab, vd lúc mới load trang) — không có gì để rebind vào.
+          onActivate: () => {
+            const active = getActiveTab();
+            if (active) {
+              active.engineType = env.engine;
+              bindTabToEnv(active, env);
+            } else {
+              const tab = createTab({
+                engineType: env.engine,
+                title: env.engine === "mongo" ? "Mongo mới" : "SQL mới"
+              });
+              bindTabToEnv(tab, env);
+              activateTab(tab.id);
+            }
+          }
+        });
+        level1RowsByEnvName.set(env.name, node.querySelector(".node-row"));
+        treeEl.appendChild(node);
+      }
+      refreshTreeHighlight();
+    }
+
+    async function loadEnvironments() {
+      try {
+        const environments = await fetchJson("/sql/environments");
+        allEnvironments = environments;
+        level1RowsByEnvName.clear();
+        renderConnectionsInto(environments);
+      } catch (error) {
+        treeEl.innerHTML = `<div class="empty">Lỗi tải environments: ${error.message}</div>`;
+      }
+    }
+
+    // Filter: chỉ lọc trong phạm vi node ĐÃ expand/cache (đánh đổi khi chuyển cây sang lazy-load —
+    // không còn 1 mảng đầy đủ để lọc "search everything").
+    treeFilter.addEventListener("input", () => {
+      const needle = treeFilter.value.trim().toLowerCase();
+      const rows = treeEl.querySelectorAll(".node-row");
+      rows.forEach((row) => {
+        const label = row.querySelector(".label")?.textContent.toLowerCase() || "";
+        row.closest(".node").style.display = !needle || label.includes(needle) ? "" : "none";
+      });
+    });
+
+    function renderPager(pagerRowEl, { page, pageSize, totalRows, totalPages }, onPageChange) {
+      pagerRowEl.innerHTML = "";
+      if (!totalRows) {
+        return;
+      }
+      const row = document.createElement("div");
+      row.className = "pager-row";
+
+      const btnPrev = document.createElement("button");
+      btnPrev.className = "icon-btn";
+      btnPrev.textContent = "◀";
+      btnPrev.title = "Trang trước";
+      btnPrev.disabled = page <= 1;
+      btnPrev.addEventListener("click", () => onPageChange(page - 1));
+      row.appendChild(btnPrev);
+
+      const info = document.createElement("span");
+      info.textContent = `Trang ${page}/${totalPages || 1} — tổng ${totalRows} dòng`;
+      row.appendChild(info);
+
+      const btnNext = document.createElement("button");
+      btnNext.className = "icon-btn";
+      btnNext.textContent = "▶";
+      btnNext.title = "Trang sau";
+      btnNext.disabled = page >= totalPages;
+      btnNext.addEventListener("click", () => onPageChange(page + 1));
+      row.appendChild(btnNext);
+
+      pagerRowEl.appendChild(row);
+    }
+
+    // Gắn "Xem thêm"/"Xem rút gọn" cho mọi .cell-value bị tràn chữ (đo bằng scrollWidth so với
+    // clientWidth thật sau khi bảng đã attach vào DOM — không đoán trước ô nào tràn, vì độ rộng cột
+    // phụ thuộc kích thước cửa sổ thực tế lúc render, không cố định).
+    function setupExpandableCells(root) {
+      root.querySelectorAll("td .cell-value").forEach((valueEl) => {
+        if (valueEl.scrollWidth <= valueEl.clientWidth) {
+          return;
+        }
+        const td = valueEl.closest("td");
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "cell-toggle";
+        toggle.textContent = "Xem thêm";
+        toggle.addEventListener("click", () => {
+          const expanded = valueEl.classList.toggle("expanded");
+          td.classList.toggle("cell-expanded", expanded);
+          toggle.textContent = expanded ? "Xem rút gọn" : "Xem thêm";
+        });
+        td.appendChild(toggle);
+      });
+    }
+
+    // JSON tree — kết quả Mongo (không phải bảng, mỗi document 1 khối cây thu gọn/mở rộng, xem
+    // public/vendor/json-tree.js::renderJsonTree). Dùng CHUNG pagination UI (#pagerRow/renderPager())
+    // với Postgres — chỉ khác phần "render nội dung mỗi trang".
+    function renderResultJsonTree(els, data, onPageChange) {
+      const isPaginated = data.totalRows !== undefined;
+      els.resultsMeta.className = "";
+      els.resultsMeta.textContent = isPaginated
+        ? ""
+        : `${data.rowCount} dòng${data.truncated ? " (đã cắt bớt, giới hạn server)" : ""}.`;
+      els.resultsMeta.closest(".results-meta-row").style.display = isPaginated ? "none" : "";
+
+      els.resultsTableWrap.hidden = true;
+      els.resultsTableWrap.innerHTML = "";
+      els.jsonResultsWrap.hidden = false;
+      els.jsonResultsWrap.innerHTML = "";
+
+      if (!data.rows.length) {
+        els.pagerRow.innerHTML = "";
+        return;
+      }
+
+      for (const row of data.rows) {
+        const docWrap = document.createElement("div");
+        docWrap.className = "json-doc";
+        docWrap.appendChild(window.renderJsonTree(row));
+        els.jsonResultsWrap.appendChild(docWrap);
+      }
+
+      if (isPaginated && onPageChange) {
+        renderPager(els.pagerRow, data, onPageChange);
+      } else {
+        els.pagerRow.innerHTML = "";
+      }
+    }
+
+    // Dispatcher theo engine của tab — cùng shape response {page, pageSize, totalRows, totalPages,
+    // fields, rows} cho cả 2 engine (xem services/db.service.js) nên chỉ cần chọn hàm render, không
+    // cần biến đổi dữ liệu. Luôn render vào DOM pane của ĐÚNG tab đã chạy xong query (tab.resultEls),
+    // bất kể tab đó có đang active hay không — pane ẩn sẵn (hidden) tới khi user chuyển sang tab đó.
+    function renderResults(tab, data, onPageChange) {
+      if (tab.engineType === "mongo") {
+        renderResultJsonTree(tab.resultEls, data, onPageChange);
+      } else {
+        renderResultTable(tab.resultEls, data, onPageChange);
+      }
+    }
+
+    function renderResultTable(els, data, onPageChange) {
+      const isPaginated = data.totalRows !== undefined;
+      els.resultsTableWrap.hidden = false;
+      els.jsonResultsWrap.hidden = true;
+      els.resultsMeta.className = "";
+      // Chế độ phân trang đã có pager-row hiển thị "Trang X/Y — tổng N dòng" ở dưới bảng — dòng
+      // meta phía trên chỉ còn cần thiết cho chế độ không phân trang (legacy)/lỗi.
+      els.resultsMeta.textContent = isPaginated
+        ? ""
+        : `${data.rowCount} dòng${data.truncated ? " (đã cắt bớt, giới hạn server)" : ""}.`;
+      els.resultsMeta.closest(".results-meta-row").style.display = isPaginated ? "none" : "";
+
+      if (!data.rows.length) {
+        els.resultsTableWrap.innerHTML = "";
+        els.pagerRow.innerHTML = "";
+        return;
+      }
+
+      const table = document.createElement("table");
+      table.className = "result-table";
+
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      const sttHead = document.createElement("th");
+      sttHead.className = "stt-col";
+      sttHead.textContent = "STT";
+      headRow.appendChild(sttHead);
+      for (const field of data.fields) {
+        const th = document.createElement("th");
+        th.textContent = field;
+        headRow.appendChild(th);
+      }
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      const baseIndex = isPaginated ? (data.page - 1) * data.pageSize : 0;
+      const tbody = document.createElement("tbody");
+      data.rows.forEach((row, index) => {
+        const tr = document.createElement("tr");
+        const sttCell = document.createElement("td");
+        sttCell.className = "stt-col";
+        sttCell.textContent = String(baseIndex + index + 1);
+        tr.appendChild(sttCell);
+        for (const field of data.fields) {
+          const td = document.createElement("td");
+          const value = row[field];
+          const valueEl = document.createElement("span");
+          valueEl.className = "cell-value";
+          if (value === null || value === undefined) {
+            valueEl.textContent = "NULL";
+            td.className = "null-value";
+          } else if (typeof value === "object") {
+            valueEl.textContent = JSON.stringify(value);
+          } else {
+            valueEl.textContent = String(value);
+          }
+          td.appendChild(valueEl);
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+
+      els.resultsTableWrap.innerHTML = "";
+      els.resultsTableWrap.appendChild(table);
+      // Phải đo sau khi đã attach vào DOM — scrollWidth/clientWidth của phần tử chưa gắn cây DOM
+      // luôn trả 0, không phát hiện được ô nào thật sự tràn chữ.
+      setupExpandableCells(table);
+
+      if (isPaginated && onPageChange) {
+        renderPager(els.pagerRow, data, onPageChange);
+      } else {
+        els.pagerRow.innerHTML = "";
+      }
+    }
+
+    // sqlOverride truyền vào bởi pager (Prev/Next) để chạy lại ĐÚNG câu đã Execute trước đó, không
+    // đọc nội dung editor mới gõ nhưng chưa Execute — tránh phân trang âm thầm chạy câu SQL khác với
+    // câu user thấy trên màn hình. Không truyền (Execute/Ctrl+Enter/double-click) → luôn đọc lại nội
+    // dung editor hiện tại của ĐÚNG tab và về trang 1.
+    async function runQuery(tab, page = 1, sqlOverride) {
+      if (!tab) return;
+      const sqlText = sqlOverride !== undefined ? sqlOverride : tab.view.state.doc.toString().trim();
+      if (!tab.boundEnvName || !sqlText) {
+        return;
+      }
+      const env = findEnvByName(tab.boundEnvName);
+      if (!env) return; // env có thể đã bị xoá qua import/đổi cấu hình — fail closed, không crash
+
+      tab.currentQuerySql = sqlText;
+      const isActive = tab.id === activeTabId;
+      if (isActive) btnExecute.disabled = true;
+      if (isActive) toolbarStatus.textContent = "Đang chạy…";
+      const startedAt = performance.now();
+
+      try {
+        const data = await fetchJson("/sql/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            env: env.name,
+            sql: sqlText,
+            page,
+            pageSize: PAGE_SIZE,
+            ...(env.engine === "mongo" ? { database: tab.activeMongoDatabase } : {})
+          })
+        });
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        tab.lastResultData = data;
+        renderResults(tab, data, (newPage) => runQuery(tab, newPage, tab.currentQuerySql));
+        if (isActive) toolbarStatus.textContent = `Xong trong ${elapsedMs}ms.`;
+      } catch (error) {
+        tab.resultEls.resultsMeta.className = "error";
+        tab.resultEls.resultsMeta.textContent = error.message;
+        tab.resultEls.resultsMeta.closest(".results-meta-row").style.display = "";
+        tab.resultEls.resultsTableWrap.innerHTML = "";
+        tab.resultEls.jsonResultsWrap.innerHTML = "";
+        tab.resultEls.pagerRow.innerHTML = "";
+        if (isActive) toolbarStatus.textContent = "Lỗi.";
+      } finally {
+        if (isActive) btnExecute.disabled = false;
+      }
+    }
+
+    function clearAll() {
+      const tab = getActiveTab();
+      if (!tab) return;
+      tab.view.dispatch({ changes: { from: 0, to: tab.view.state.doc.length, insert: "" } });
+      tab.resultEls.resultsMeta.className = "";
+      tab.resultEls.resultsMeta.textContent = "Chưa có kết quả.";
+      tab.resultEls.resultsMeta.closest(".results-meta-row").style.display = "";
+      tab.resultEls.resultsTableWrap.hidden = false;
+      tab.resultEls.resultsTableWrap.innerHTML = "";
+      tab.resultEls.jsonResultsWrap.hidden = true;
+      tab.resultEls.jsonResultsWrap.innerHTML = "";
+      tab.resultEls.pagerRow.innerHTML = "";
+      toolbarStatus.textContent = "";
+      tab.currentQuerySql = null;
+      tab.lastResultData = null;
+      // handleTabDocChanged() (gắn trên EditorView.updateListener của chính tab) tự downgrade tab
+      // đang bound thành type-only khi dispatch() phía trên làm nội dung rỗng — không lặp lại logic
+      // đó ở đây, chỉ dispatch rồi để listener xử lý.
+      tab.view.focus();
+    }
+
+    // Export/Import cấu hình kết nối — kèm luôn giá trị connection string thật (khác mọi endpoint
+    // /sql/* khác, cố tình không bao giờ lộ credential), mục đích "share cấu hình dùng ngay được"
+    // cho người khác. Xem k8sctl/CLAUDE.md mục "SQL Tool".
+    async function exportConfigFile() {
+      try {
+        const data = await fetchJson("/sql/config/export");
+        const jsonText = JSON.stringify(data, null, 2);
+        if (window.showSaveFilePicker) {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: "k8sctl-sql-config.json",
+            types: [{ description: "JSON", accept: { "application/json": [".json"] } }]
+          });
+          const writable = await handle.createWritable();
+          await writable.write(jsonText);
+          await writable.close();
+          toolbarStatus.textContent = "Đã export cấu hình.";
+        } else {
+          // Fallback khi trình duyệt không hỗ trợ File System Access API (vd Firefox) — tải thẳng
+          // về Downloads, không có popup chọn vị trí lưu thật như showSaveFilePicker.
+          const blob = new Blob([jsonText], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "k8sctl-sql-config.json";
+          a.click();
+          URL.revokeObjectURL(url);
+          toolbarStatus.textContent = "Đã tải file cấu hình về Downloads (trình duyệt không hỗ trợ chọn vị trí lưu).";
+        }
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          toolbarStatus.textContent = `Lỗi export: ${error.message}`;
+        }
+      }
+    }
+
+    async function applyImportedConfig(text) {
+      const parsed = JSON.parse(text);
+      await fetchJson("/sql/config/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(parsed)
+      });
+      // Cấu hình vừa import có thể ghi đè environment trùng tên (đổi connection string) — cache cây
+      // cũ không còn đáng tin, xoá hết để lần expand kế tiếp tải lại dữ liệu mới.
+      schemaCache.clear();
+      tableCache.clear();
+      columnCache.clear();
+      await loadEnvironments();
+      toolbarStatus.textContent = "Đã import cấu hình.";
+    }
+
+    async function importConfigFile() {
+      try {
+        let text;
+        if (window.showOpenFilePicker) {
+          const [handle] = await window.showOpenFilePicker({
+            types: [{ description: "JSON", accept: { "application/json": [".json"] } }]
+          });
+          const file = await handle.getFile();
+          text = await file.text();
+        } else {
+          text = await new Promise((resolve, reject) => {
+            importFileInput.value = "";
+            importFileInput.onchange = () => {
+              const file = importFileInput.files[0];
+              if (!file) {
+                reject(new Error("Chưa chọn file."));
+                return;
+              }
+              file.text().then(resolve, reject);
+            };
+            importFileInput.click();
+          });
+        }
+        await applyImportedConfig(text);
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          toolbarStatus.textContent = `Lỗi import: ${error.message}`;
+        }
+      }
+    }
+
+    // ---- Modal "Cấu hình" — markup/CSS/JS thật dùng CHUNG với scripts/wizard.html qua
+    // public/shared/settings-modal.js (xem k8sctl/CLAUDE.md mục "Settings"), gọi API /settings/*
+    // để THẬT SỰ di chuyển + tạo lại shortcut/service ngay khi app đang chạy, thay vì phải chạy
+    // lại lệnh quickstart.
+
+    // Sau khi apply, server có thể tạm ngưng phục vụ vài giây (đang di chuyển thư mục/restart
+    // service) — poll /health tới khi có phản hồi lại rồi mới reload trang.
+    async function waitForHealthAndReload() {
+      for (let i = 0; i < 30; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        try {
+          const res = await fetch("/health");
+          if (res.ok) {
+            window.location.reload();
+            return;
+          }
+        } catch {
+          // server chưa lên lại — thử tiếp
+        }
+      }
+      const statusEl = settingsModalMount.querySelector("#smStatus");
+      if (statusEl) {
+        statusEl.className = "sm-status error";
+        statusEl.textContent = "Không thấy server phản hồi lại sau khi áp dụng — kiểm tra logs/settings-relocate.log.";
+      }
+    }
+
+    async function openSettingsModal() {
+      settingsModal.hidden = false;
+      if (settingsModalInited) return;
+      settingsModalInited = true;
+      await initSettingsModal({
+        mountEl: settingsModalMount,
+        endpoints: {
+          fragment: "/shared/settings-modal.html",
+          current: "/settings/current",
+          browseDirectory: "/settings/browse-directory",
+          apply: "/settings/apply",
+          rancherClusters: "/settings/rancher-clusters",
+          revealRancherToken: "/settings/rancher-clusters/reveal-token",
+          rancherProjects: "/settings/rancher-projects",
+          rancherNamespaces: "/settings/rancher-namespaces",
+          rancherServices: "/settings/rancher-services",
+          rancherClusterOptions: "/settings/rancher-cluster-options",
+          rancherProjectsAdhoc: "/settings/rancher-projects-adhoc",
+          rancherNamespacesAdhoc: "/settings/rancher-namespaces-adhoc",
+          rancherServicesAdhoc: "/settings/rancher-services-adhoc",
+          dbEnvironments: "/settings/db-environments",
+          revealDbEnvironmentValue: "/settings/db-environments/reveal-value",
+          dbEnvPods: "/pods/for-db-env",
+          dbEnvPodsAdhoc: "/pods/for-db-env-adhoc",
+          testDbConnection: "/settings/db-environments/test",
+          testDbConnectionAdhoc: "/settings/db-environments/test-adhoc"
+        },
+        applyLabel: "Áp dụng cấu hình",
+        onClose: () => {
+          settingsModal.hidden = true;
+        },
+        onApplied: () => {
+          waitForHealthAndReload();
+        }
+      });
+    }
+
+    btnSettings.addEventListener("click", openSettingsModal);
+
+    btnExecute.addEventListener("click", () => runQuery(getActiveTab()));
+    btnClear.addEventListener("click", clearAll);
+    btnExport.addEventListener("click", exportConfigFile);
+    btnImport.addEventListener("click", importConfigFile);
+
+    // Nút "+" cuối thanh tab mở dropdown 2 mục (Query SQL/Query NoSQL) — không có component dropdown
+    // dùng chung sẵn có trong codebase nên tự viết tối giản: absolute-position + toggle [hidden],
+    // đóng khi click ra ngoài .tab-new-wrap.
+    btnNewTab.addEventListener("click", (event) => {
+      event.stopPropagation();
+      newTabMenu.hidden = !newTabMenu.hidden;
+    });
+    newTabMenu.addEventListener("click", (event) => {
+      const btn = event.target.closest("button[data-engine]");
+      if (!btn) return;
+      newTabMenu.hidden = true;
+      const engineType = btn.dataset.engine;
+      const tab = createTab({ engineType, title: engineType === "mongo" ? "Mongo mới" : "SQL mới" });
+      activateTab(tab.id);
+    });
+    document.addEventListener("click", (event) => {
+      if (!newTabMenu.hidden && !event.target.closest(".tab-new-wrap")) {
+        newTabMenu.hidden = true;
+      }
+    });
+
+    // 2 thanh resize kéo-thả (aside↔query-panel chiều ngang, editor↔results chiều dọc) — set thẳng
+    // biến CSS trên :root nên áp dụng đồng nhất cho MỌI tab (không phải per-tab state, xem CSS
+    // .divider-v/.divider-h). Không persist qua localStorage (không có trong yêu cầu).
+    function setupDivider(dividerEl, { cssVar, min, max, axis, targetEl }) {
+      let dragging = false;
+      let startPos = 0;
+      let startSize = 0;
+
+      dividerEl.addEventListener("mousedown", (event) => {
+        dragging = true;
+        dividerEl.classList.add("dragging");
+        document.body.style.userSelect = "none";
+        startPos = axis === "x" ? event.clientX : event.clientY;
+        const rect = targetEl.getBoundingClientRect();
+        startSize = axis === "x" ? rect.width : rect.height;
+        event.preventDefault();
+      });
+
+      window.addEventListener("mousemove", (event) => {
+        if (!dragging) return;
+        const pos = axis === "x" ? event.clientX : event.clientY;
+        const delta = pos - startPos;
+        const newSize = Math.min(max, Math.max(min, startSize + delta));
+        document.documentElement.style.setProperty(cssVar, `${newSize}px`);
+      });
+
+      window.addEventListener("mouseup", () => {
+        if (!dragging) return;
+        dragging = false;
+        dividerEl.classList.remove("dragging");
+        document.body.style.userSelect = "";
+      });
+    }
+
+    setupDivider(dividerH, {
+      cssVar: "--aside-width", min: 160, max: 600, axis: "x", targetEl: document.querySelector("aside")
+    });
+    setupDivider(dividerV, {
+      cssVar: "--editor-height", min: 120, max: Math.round(window.innerHeight * 0.7), axis: "y", targetEl: editorContainerEl
+    });
+
+    // KHÔNG tự mở sẵn 1 tab lúc load (yêu cầu SRS — mặc định "SQL" sai lệch khi hệ thống dùng
+    // nhiều loại DB); user tự bấm "+" ở header hoặc click 1 connection/table trong cây để mở tab
+    // đầu tiên. updateEmptyState() hiện placeholder ngay từ đầu (tabs rỗng).
+    updateEmptyState();
+    loadEnvironments();
+  </script>
+
+  <script>
+    // k8sctl-anti-inspect — cùng snippet telecode dùng để làm GUI "nhìn như desktop thật sự" khi mở
+    // qua shortcut kiosk (--app=): chặn F12 + chuột phải. Chỉ là UX nicety, không chặn được DevTools
+    // mở qua menu trình duyệt hay Ctrl+Shift+I.
+    document.addEventListener('keydown', function (e) { if (e.key === 'F12') e.preventDefault(); });
+    document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  </script>
+</body>
+</html>

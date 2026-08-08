@@ -1,0 +1,22 @@
+[package]
+name = "k8sql"
+version = "0.1.0"
+description = "Desktop shell cho k8sql — Tauri + Node sidecar, kế thừa backend k8sctl"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Placeholder cho crate keychain (Phase 3) — `keyring = "3"` sẽ thêm khi làm secret bridge (keychain.rs),
+# chưa thêm ở Phase 1 vì chưa dùng, tránh kéo dep chưa cần.

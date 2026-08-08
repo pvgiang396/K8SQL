@@ -1,0 +1,37 @@
+<div class="sm-content">
+  <div class="sm-header">
+    <h3 id="smTitle">Cấu hình cài đặt</h3>
+    <button type="button" id="smBtnClose" class="sm-close-x" title="Đóng" aria-label="Đóng">✕</button>
+  </div>
+
+  <div class="sm-body">
+    <div class="sm-block">
+      <div class="sm-block-label">Thư mục cài đặt</div>
+      <div class="sm-input-group">
+        <input type="text" id="smInstallDir" />
+        <button type="button" id="smBtnBrowseDir" class="primary">Chọn thư mục...</button>
+      </div>
+    </div>
+
+    <div class="sm-section">
+      <div class="sm-section-header">
+        <div class="sm-block-label">Danh sách Rancher</div>
+        <a href="#" id="smBtnAddCluster" class="sm-btn-add"><span class="sm-icon-plus">+</span>Thêm mới</a>
+      </div>
+      <div class="sm-cardlist" id="smRancherTableBody"></div>
+    </div>
+
+    <div class="sm-section">
+      <div class="sm-section-header">
+        <div class="sm-block-label">Danh sách Connection String</div>
+        <a href="#" id="smBtnAddDbEnv" class="sm-btn-add"><span class="sm-icon-plus">+</span>Thêm mới</a>
+      </div>
+      <div class="sm-cardlist" id="smDbEnvTableBody"></div>
+    </div>
+
+    <div class="sm-status" id="smStatus"></div>
+    <div class="sm-actions">
+      <button type="button" id="smBtnApply" class="primary">Áp dụng</button>
+    </div>
+  </div>
+</div>

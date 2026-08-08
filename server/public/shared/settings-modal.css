@@ -1,0 +1,534 @@
+/* Dùng chung bởi scripts/wizard.html (popup quickstart) và public/index.html (popup ⚙️ "Cấu
+   hình") — 1 bộ style duy nhất để 2 popup không lệch nhau (trước đây mỗi nơi tự định nghĩa CSS
+   riêng, lệch cả padding lẫn border-radius). Token kích thước/bo góc/font khớp trang mẫu chuẩn
+   r3web `/theme/crud-form` (control cao 38px, border-radius 5px, font-size 13px — xem
+   srs/nangcapcaidatk8sctl/mota.md) — không hardcode màu hex của r3web, luôn dùng biến CSS
+   --bg/--bg-alt/--border/--text/--text-dim/--accent/--accent-fg đã có sẵn ở 2 host (theme-aware,
+   hỗ trợ dark mode) để giữ theming, chỉ đồng bộ kích thước/bo góc/cấu trúc. */
+:root {
+  --sm-radius: 5px;
+}
+
+/* Header xám full-bleed sát 2 cạnh + đỉnh khối bọc ngoài (`.modal-box` ở public/index.html) — thay
+   vì bleed bằng margin âm (dễ lệch nếu khối bọc ngoài đổi padding), khối bọc ngoài tự bỏ padding
+   riêng (padding: 0) và nhường toàn bộ padding cho `.sm-body` bên dưới — header nằm ngoài
+   `.sm-body` nên tự nhiên tràn sát cạnh mà không cần biết padding khối bọc ngoài là bao nhiêu. */
+.sm-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--sm-radius) var(--sm-radius) 0 0;
+  padding: 14px 20px;
+}
+.sm-body {
+  padding: 18px 20px;
+}
+
+/* Nút X đóng popup — thay cho nút "Đóng" ở footer trước đây, luôn nằm cố định bên phải header
+   (header sticky khi .sm-body cuộn dọc, xem .sm-header ở trên). Selector 2 class (thay vì 1) để
+   specificity vượt qua `.sm-content button` (0,1,1) — không dùng ID như #smBtnBrowseDir vì chỉ có
+   đúng 1 nút loại này trong toàn modal, không cần né trùng thứ tự khai báo với nút khác. */
+.sm-header .sm-close-x {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: 50%;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.sm-header .sm-close-x:hover {
+  background: var(--border-soft, var(--border));
+  color: var(--text);
+}
+
+/* Cùng công thức viết hoa tiêu đề section đã dùng ở `aside h2` (public/index.html, "Object
+   Explorer") — áp lại cho nhất quán, không bịa style mới. */
+.sm-content h3 {
+  margin: 0;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.sm-block {
+  margin-bottom: 16px;
+}
+
+.sm-block-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+/* Input/button/select — cùng chiều cao/font/bo góc với "Tên danh mục"/"Lưu lại" ở crud-form. */
+.sm-content input[type="text"],
+.sm-content input[type="password"],
+.sm-content select {
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: var(--sm-radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.sm-content input[type="text"]:focus,
+.sm-content input[type="password"]:focus,
+.sm-content select:focus {
+  outline: none;
+}
+
+.sm-content button {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: var(--sm-radius);
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  box-sizing: border-box;
+}
+/* "Lưu lại"/"Áp dụng" — nền pastel accent (không fill đặc) + viền/chữ accent, dùng color-mix() để
+   tự thích ứng theo --accent của theme hiện tại thay vì hardcode hex của r3web. */
+.sm-content button.primary {
+  background: color-mix(in srgb, var(--accent) 15%, var(--bg));
+  color: var(--accent);
+  border: 1.5px solid var(--accent);
+}
+/* "Làm mới" — nền xám nhạt + viền/chữ xám đậm hơn viền thường. */
+.sm-content button.secondary {
+  background: var(--bg-alt);
+  color: var(--text-dim);
+  border: 1.5px solid var(--text-dim);
+}
+.sm-content button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Textbox thư mục + nút "Chọn thư mục..." nhìn như 1 control thống nhất (button group) — input bo
+   góc trái, button bo góc phải, border liền không double ở giữa. Ép bằng ID để không phụ thuộc thứ
+   tự khai báo cascade với `.sm-content button.primary` (2 rule cùng target nút này, specificity
+   theo class khác nhau nếu chỉ dùng class chung). */
+.sm-input-group {
+  display: flex;
+}
+.sm-input-group input[type="text"] {
+  flex: 1 1 auto;
+  border-radius: var(--sm-radius) 0 0 var(--sm-radius);
+  border-right: none;
+}
+#smBtnBrowseDir {
+  border-radius: 0 var(--sm-radius) var(--sm-radius) 0;
+  white-space: nowrap;
+}
+
+/* Khối "Danh sách Rancher"/"Danh sách Connection String" — tương đương FormSection variant="plain"
+   của r3web: border bao ngoài + header con nền xám nhạt chứa label + nút "Thêm mới". */
+.sm-section {
+  border: 1px solid var(--border);
+  border-radius: var(--sm-radius);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.sm-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+}
+.sm-section-header .sm-block-label {
+  margin-bottom: 0;
+}
+
+a.sm-btn-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+a.sm-btn-add .sm-icon-plus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* Danh sách dạng "card" — mỗi phần tử (1 Rancher cluster / 1 Connection String) là 1 khối gồm
+   nhiều hàng label+value xếp dọc, ÁP DỤNG LUÔN cho mọi kích thước màn hình (không đặt trong
+   @media) — theo yêu cầu mota.md: nhìn giống lưới "Danh sách danh mục" ở khổ ≤768px của r3web ở
+   MỌI khổ màn hình, vì popup này đã cố định 768px (xem public/index.html/.modal-box). */
+.sm-card {
+  border-bottom: 1px solid var(--border);
+}
+.sm-card:last-child {
+  border-bottom: none;
+}
+
+.sm-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-soft, var(--border));
+}
+.sm-field:last-child {
+  border-bottom: none;
+}
+.sm-field-label {
+  width: 110px;
+  flex-shrink: 0;
+  padding-top: 9px; /* căn baseline chữ label với input cao 38px bên cạnh */
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.sm-field-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sm-field-value input[type="text"],
+.sm-field-value input[type="password"],
+.sm-field-value select {
+  width: 100%;
+}
+.sm-field-value .sm-cascade-cell {
+  width: 100%;
+}
+
+/* Ô Rancher token/Connection String + nút icon con mắt nhìn như 1 khối thống nhất — cùng công
+   thức button-group ở .sm-input-group/#smBtnBrowseDir (input bo góc trái, button bo góc phải,
+   border liền không double ở giữa), border-radius bên phải của button lấy đúng --sm-radius của
+   textbox làm chuẩn (khớp yêu cầu). Chiếm full width ô value giống .sm-cascade-cell ở trên vì
+   input password bên trong không còn tự width:100% được nữa (đã đổi sang flex:1 1 auto). */
+.sm-field-value .sm-password-group {
+  width: 100%;
+  display: flex;
+}
+.sm-password-group input[type="password"],
+.sm-password-group input[type="text"] {
+  flex: 1 1 auto;
+  width: auto;
+  border-radius: var(--sm-radius) 0 0 var(--sm-radius);
+  border-right: none;
+}
+.sm-password-group .sm-toggle-visibility {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 0 var(--sm-radius) var(--sm-radius) 0;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.sm-password-group .sm-toggle-visibility:hover {
+  color: var(--text);
+}
+
+/* Hàng đầu tiên của mỗi card (thay STT + Mô tả giữa + Thao tác cuối trước đây) — đóng vai trò
+   "header" nên luôn tô nền xám, không dùng lại layout label/value như field thường. */
+.sm-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+}
+.sm-card-header-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sm-card-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+.sm-card-index {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.sm-card-desc-text {
+  /* KHÔNG flex-grow — icon trạng thái/bút chì phải nằm SÁT cạnh text, không bị đẩy ra xa do span
+     giãn hết chỗ trống còn lại trong `.sm-card-header-main` (bug thị giác đã gặp: text ngắn nhưng
+     span giãn to khiến icon theo sau trông như trôi tận rìa phải). */
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-word;
+}
+.sm-card-desc-text.placeholder {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.sm-card-desc-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sm-card-status {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+}
+a.sm-btn-edit-desc {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  opacity: 0.7;
+  text-decoration: none;
+}
+a.sm-btn-edit-desc:hover {
+  opacity: 1;
+}
+.sm-card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+a.sm-btn-delete {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  opacity: 0.75;
+}
+a.sm-btn-delete:hover {
+  opacity: 1;
+}
+a.sm-btn-delete img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+/* Icon copy định danh Rancher/Connection String (đặt SAU icon xoá) — dùng ký tự ⧉ (đúng convention
+   icon copy đã có ở Object Explorer, public/index.html) thay vì tạo PNG mới, canh cùng kích thước
+   16px với 2 icon ảnh bên cạnh (delete/test) qua font-size/line-height. */
+a.sm-btn-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+  color: var(--text-dim);
+}
+a.sm-btn-copy:hover {
+  opacity: 1;
+  color: var(--text);
+}
+
+/* Cột/field Trạng thái (Connection String) — icon kết quả "Kiểm tra kết nối". */
+a.sm-btn-test {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  opacity: 0.75;
+}
+a.sm-btn-test:hover {
+  opacity: 1;
+}
+a.sm-btn-test.disabled {
+  opacity: 0.3;
+  cursor: default;
+  pointer-events: none;
+}
+a.sm-btn-test img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
+/* Rancher Key — chỉ xem, không phải input, nên style riêng để không trông giống ô nhập liệu. */
+.sm-readonly-text {
+  display: inline-block;
+  padding-top: 9px;
+  font-size: 13px;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+.sm-cascade-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sm-cascade-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.sm-cascade-hint.error {
+  color: #e05252;
+}
+.sm-cascade-back {
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  align-self: flex-start;
+}
+.sm-cascade-back:hover {
+  text-decoration: underline;
+}
+
+.sm-status {
+  min-height: 16px;
+  font-size: 12px;
+  margin: 8px 0;
+}
+.sm-status.error {
+  color: #e05252;
+}
+.sm-status.success {
+  color: #3aa76d;
+}
+
+.sm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Dialog xác nhận xoá (confirmDeleteWithKey(), settings-modal.js) — tự chứa, không dùng chung
+   .modal-overlay/.modal-box của public/index.html (file này còn dùng độc lập ở scripts/wizard.html
+   nên không có 2 class đó). z-index cao hơn mọi thứ khác trong popup Cấu hình (kể cả bản thân
+   .modal-overlay của index.html, z-index 100) vì đây là dialog CHỒNG LÊN popup đang mở. */
+.sm-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.sm-confirm-box {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--sm-radius);
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  padding: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+.sm-confirm-box h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+.sm-confirm-box p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.sm-confirm-box p code {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+  color: var(--text);
+}
+/* .sm-confirm-box nằm NGOÀI .sm-content (append thẳng vào document.body, xem
+   confirmDeleteWithKey()) nên không thừa hưởng được style input/button của .sm-content — tự khai
+   đầy đủ ở đây thay vì dựa vào rule đã có, tránh input/nút hiện ra trần trụi kiểu mặc định trình
+   duyệt. */
+.sm-confirm-box input[type="text"] {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 14px;
+  margin-bottom: 14px;
+  border-radius: var(--sm-radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.sm-confirm-box input[type="text"]:focus {
+  outline: none;
+}
+.sm-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.sm-confirm-actions button {
+  min-height: 38px;
+  padding: 0 16px;
+  border-radius: var(--sm-radius);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  box-sizing: border-box;
+}
+.sm-confirm-actions button.secondary {
+  background: var(--bg-alt);
+  color: var(--text-dim);
+  border: 1.5px solid var(--text-dim);
+}
+.sm-confirm-actions .sm-btn-danger {
+  border: 1.5px solid var(--danger, #e05252);
+  background: color-mix(in srgb, var(--danger, #e05252) 12%, var(--bg));
+  color: var(--danger, #e05252);
+}
+.sm-confirm-actions .sm-btn-danger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

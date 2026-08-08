@@ -2,8 +2,9 @@ const fs = require("fs/promises");
 const path = require("path");
 const { AppError } = require("../utils/error");
 const rancherClient = require("./rancher.client");
+const { getBaseDir } = require("../utils/base-dir");
 
-const namespacesConfigPath = path.resolve(__dirname, "..", "config", "namespaces.json");
+const namespacesConfigPath = path.resolve(getBaseDir(), "config", "namespaces.json");
 let k8sModulePromise;
 
 async function getK8sModule() {
@@ -46,7 +47,7 @@ function resolveConfigPath(configPath) {
   if (path.isAbsolute(configPath)) {
     return configPath;
   }
-  return path.resolve(__dirname, "..", configPath);
+  return path.resolve(getBaseDir(), configPath);
 }
 
 function findClusterByDomain(items, domain) {

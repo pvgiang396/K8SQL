@@ -4,9 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const { AppError } = require("../utils/error");
 const { loadEnvironments, listEnvironmentsPublic } = require("./db-environment.service");
+const { getBaseDir } = require("../utils/base-dir");
 
-const CONFIG_PATH = path.join(__dirname, "..", "config", "db-environments.json");
-const ENV_FILE_PATH = path.join(__dirname, "..", ".env");
+const CONFIG_PATH = path.join(getBaseDir(), "config", "db-environments.json");
+const ENV_FILE_PATH = path.join(getBaseDir(), ".env");
 
 // LƯU Ý BẢO MẬT: exportConfig()/importConfig() là bề mặt API DUY NHẤT trả/nhận credential Postgres
 // THẬT — mọi endpoint /sql/* khác (đặc biệt listEnvironmentsPublic()) cố tình không bao giờ lộ

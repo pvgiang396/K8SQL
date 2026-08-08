@@ -3,8 +3,9 @@
 const fs = require("fs");
 const path = require("path");
 const { AppError } = require("../utils/error");
+const { getBaseDir } = require("../utils/base-dir");
 
-const CONFIG_PATH = path.join(__dirname, "..", "config", "db-environments.json");
+const CONFIG_PATH = path.join(getBaseDir(), "config", "db-environments.json");
 
 function loadEnvironments() {
   let raw;

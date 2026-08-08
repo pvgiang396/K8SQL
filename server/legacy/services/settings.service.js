@@ -8,8 +8,9 @@ const { logOperation } = require("../utils/logger");
 const { browseDirectoryNative } = require("../scripts/lib/browse-directory");
 const { readEnvFile, dbEnvVarNames } = require("../scripts/lib/config-info");
 const rancherClient = require("./rancher.client");
+const { getBaseDir } = require("../utils/base-dir");
 
-const ROOT_DIR = path.join(__dirname, "..");
+const ROOT_DIR = getBaseDir();
 const RANCHER_CLUSTERS_PATH = path.join(ROOT_DIR, "config", "rancher-clusters.json");
 const DB_ENVIRONMENTS_PATH = path.join(ROOT_DIR, "config", "db-environments.json");
 

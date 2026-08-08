@@ -1,7 +1,8 @@
 const fs = require("fs");
 const path = require("path");
+const { getBaseDir } = require("./base-dir");
 
-const logDirectory = path.resolve(__dirname, "..", "logs");
+const logDirectory = path.resolve(getBaseDir(), "logs");
 const logFilePath = path.join(logDirectory, "operations.log");
 
 function ensureLogDirectory() {

@@ -4,6 +4,7 @@
 // máy đích. Xem `sidecar.rs` (spawn_dev/spawn_release).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod native_bridge;
 mod ports;
 mod sidecar;
 
@@ -26,12 +27,21 @@ fn main() {
             } else {
                 None
             };
+            let data_dir = resolve_data_dir(app)?;
 
             tauri::async_runtime::spawn(async move {
+                let bridge = match native_bridge::start(app_handle.clone()).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("[k8sql] Lỗi khởi động native bridge: {e}");
+                        return;
+                    }
+                };
+
                 let spawn_result = if let Some(dir) = server_dir {
-                    sidecar::spawn_dev(&app_handle, &dir).await
+                    sidecar::spawn_dev(&app_handle, &dir, &data_dir, &bridge).await
                 } else {
-                    sidecar::spawn_release(&app_handle).await
+                    sidecar::spawn_release(&app_handle, &data_dir, &bridge).await
                 };
 
                 match spawn_result {
@@ -94,4 +104,17 @@ fn resolve_server_dir(_app: &tauri::App) -> Result<String, Box<dyn std::error::E
     }
 
     Err(format!("Không tìm thấy thư mục server/ (đã thử {})", dev_server.display()).into())
+}
+
+/// Thư mục chứa SQLite DB (`server/src/config/db.ts`) — dev: `server/.data/` cạnh repo (gitignored);
+/// release: app-data dir chuẩn OS do Tauri quản lý (`~/.local/share/com.pvgiang396.k8sql/` trên
+/// Linux, tương đương trên macOS/Windows) — tạo nếu chưa có.
+fn resolve_data_dir(app: &tauri::App) -> Result<String, Box<dyn std::error::Error>> {
+    let dir = if cfg!(debug_assertions) {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../server/.data")
+    } else {
+        app.path().app_data_dir()?
+    };
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.to_string_lossy().to_string())
 }

@@ -371,8 +371,7 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
   mountEl.innerHTML = await fetch(endpoints.fragment || "/shared/settings-modal.html").then((r) => r.text());
 
   const $ = (id) => mountEl.querySelector(`#${id}`);
-  const installDirInput = $("smInstallDir");
-  const btnBrowseDir = $("smBtnBrowseDir");
+  const autostartToggle = $("smAutostartToggle");
   const rancherBody = $("smRancherTableBody");
   const dbEnvBody = $("smDbEnvTableBody");
   const btnAddCluster = $("smBtnAddCluster");
@@ -1320,14 +1319,40 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     renderDbEnvTable();
   });
 
-  btnBrowseDir.addEventListener("click", async () => {
-    const res = await fetch(endpoints.browseDirectory, { method: "POST" }).then((r) => r.json());
-    if (res.data?.path) {
-      installDirInput.value = res.data.path;
-    } else if (res.data?.error) {
-      setStatus(res.data.error, "error");
-    }
-  });
+  // k8sql cài đặt qua gói OS chuẩn (.deb/.AppImage/.msi/.dmg) — không có khái niệm "thư mục cài
+  // đặt" tuỳ chọn như k8sctl (installer bash tự viết, cho phép trỏ vào bất kỳ đâu kể cả thư mục
+  // dev). Đã bỏ hẳn ô "Thư mục cài đặt" + nút "Chọn thư mục..." khỏi UI (quyết định kiến trúc, xem
+  // k8sql/CLAUDE.md mục "Việc KHÔNG port") — endpoints.browseDirectory không còn được gọi ở đây.
+
+  if (autostartToggle && endpoints.autostart) {
+    fetch(endpoints.autostart)
+      .then((r) => r.json())
+      .then((body) => {
+        autostartToggle.checked = Boolean(body.enabled);
+      })
+      .catch(() => {
+        // Native bridge (Rust) có thể chưa sẵn sàng ngay lúc mở modal — im lặng giữ trạng thái mặc
+        // định (unchecked), không chặn phần còn lại của Settings hoạt động.
+      });
+
+    autostartToggle.addEventListener("change", async () => {
+      const desired = autostartToggle.checked;
+      autostartToggle.disabled = true;
+      try {
+        const res = await fetch(endpoints.autostart, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: desired })
+        }).then(assertOk);
+        autostartToggle.checked = Boolean(res.data?.enabled);
+      } catch (error) {
+        autostartToggle.checked = !desired; // rollback UI nếu lỗi
+        setStatus(error.message || "Không đổi được cài đặt khởi động cùng hệ thống.", "error");
+      } finally {
+        autostartToggle.disabled = false;
+      }
+    });
+  }
 
   btnClose.addEventListener("click", () => {
     if (onClose) onClose();
@@ -1384,7 +1409,7 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       const applyRes = await fetch(endpoints.apply, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ installDir: installDirInput.value.trim(), values })
+        body: JSON.stringify({ values })
       }).then(assertOk);
 
       setStatus(applyRes.data?.message || "Đã áp dụng.", "success");
@@ -1411,7 +1436,6 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       fetch(endpoints.dbEnvironments).then((r) => r.json())
     ]);
 
-    installDirInput.value = current.data?.installDir || "";
     state.rancherClusters = (clusters.data || []).map((c) => ({ ...c, tokenValue: "", isNew: false }));
     state.dbEnvironments = (dbEnvironments.data || []).map((e) => ({ ...e, urlValue: "", isNew: false }));
     renderRancherTable();

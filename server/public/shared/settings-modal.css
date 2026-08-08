@@ -78,6 +78,22 @@
   letter-spacing: .05em;
 }
 
+/* Toggle "Khởi động cùng hệ thống" — checkbox thuần + label, không cần component riêng. */
+.sm-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sm-toggle-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
 /* Input/button/select — cùng chiều cao/font/bo góc với "Tên danh mục"/"Lưu lại" ở crud-form. */
 .sm-content input[type="text"],
 .sm-content input[type="password"],

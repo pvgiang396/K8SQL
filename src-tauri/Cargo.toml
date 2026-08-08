@@ -16,7 +16,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 tokio = { version = "1", features = ["full"] }
+# native_bridge.rs (Phase 3) — 1 HTTP loopback server duy nhất cho mọi tính năng cần Rust-side API
+# gọi từ sidecar Node (secret keychain, toggle autostart, ...), thay vì mở nhiều server riêng lẻ.
+axum = "0.7"
+rand = "0.8"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-# Placeholder cho crate keychain (Phase 3) — `keyring = "3"` sẽ thêm khi làm secret bridge (keychain.rs),
-# chưa thêm ở Phase 1 vì chưa dùng, tránh kéo dep chưa cần.
+keyring = "3"

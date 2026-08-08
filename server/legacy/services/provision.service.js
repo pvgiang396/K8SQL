@@ -7,8 +7,9 @@ const { logOperation } = require("../utils/logger");
 const rancherClient = require("./rancher.client");
 const rancherProvision = require("./providers/rancher/provision");
 const kubeconfigProvision = require("./providers/kubeconfig/provision");
+const { getBaseDir } = require("../utils/base-dir");
 
-const namespacesConfigPath = path.resolve(__dirname, "..", "config", "namespaces.json");
+const namespacesConfigPath = path.resolve(getBaseDir(), "config", "namespaces.json");
 
 // ─── applyYaml ────────────────────────────────────────────────────────────────
 // Tạo context trực tiếp từ tham số đầu vào (không qua domain lookup) vì site
@@ -31,7 +32,7 @@ async function buildKubeconfigProvisionCtx(configPath, namespace) {
   const { default: k8s } = await import("@kubernetes/client-node");
   const resolved = path.isAbsolute(configPath)
     ? configPath
-    : path.resolve(__dirname, "..", configPath);
+    : path.resolve(getBaseDir(), configPath);
 
   try {
     await fs.access(resolved);

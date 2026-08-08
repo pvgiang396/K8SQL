@@ -36,7 +36,7 @@ const dbConfigController = require("./controllers/db-config.controller");
 const settingsController = require("./controllers/settings.controller");
 const { errorMiddleware } = require("./utils/error");
 
-function createApp({ publicDir }) {
+function createApp({ publicDir, registerExtraRoutes }) {
   const app = express();
   app.use(express.json());
 
@@ -137,6 +137,13 @@ app.post("/internal/shutdown", async (_req, res) => {
   res.json({ success: true, message: "shutting down" });
   setTimeout(() => process.exit(0), 100);
 });
+
+// Hook cho route MỚI (không có ở k8sctl gốc, vd /internal/import-k8sctl-config) — bootstrap.ts
+// truyền vào để đăng ký TRƯỚC static/404 handler bên dưới (đăng ký sau sẽ không bao giờ khớp, vì
+// middleware 404 chặn mọi path đứng trước nó).
+if (typeof registerExtraRoutes === "function") {
+  registerExtraRoutes(app);
+}
 
 // UI web nhẹ (chọn connection, SQL editor có autocomplete, cây Object Explorer, xem kết quả) —
 // không build step, gọi same-origin tới đúng các API /sql/* ở trên. Đặt SAU mọi route API, TRƯỚC

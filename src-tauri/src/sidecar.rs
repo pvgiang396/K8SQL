@@ -3,6 +3,7 @@ use tauri::AppHandle;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+use crate::native_bridge::NativeBridge;
 use crate::ports::{find_available_port, DEFAULT_PORT};
 
 const HEALTH_POLL_INTERVAL_MS: u64 = 200;
@@ -46,15 +47,34 @@ macro_rules! log_sidecar_events {
     };
 }
 
-pub async fn spawn_dev(app: &AppHandle, server_dir: &str) -> Result<SidecarHandle, String> {
+fn bridge_args(bridge: &NativeBridge, data_dir: &str) -> Vec<String> {
+    vec![
+        "--data-dir".to_string(),
+        data_dir.to_string(),
+        "--native-bridge-url".to_string(),
+        format!("http://127.0.0.1:{}", bridge.port),
+        "--native-bridge-token".to_string(),
+        bridge.token.clone(),
+    ]
+}
+
+pub async fn spawn_dev(
+    app: &AppHandle,
+    server_dir: &str,
+    data_dir: &str,
+    bridge: &NativeBridge,
+) -> Result<SidecarHandle, String> {
     let port = find_available_port(DEFAULT_PORT)
         .ok_or_else(|| "Không tìm được port trống cho sidecar".to_string())?;
 
     let bootstrap_path = format!("{server_dir}/src/bootstrap.ts");
+    let mut args = vec![bootstrap_path.clone(), "--port".to_string(), port.to_string()];
+    args.extend(bridge_args(bridge, data_dir));
+
     let (rx, child) = app
         .shell()
         .command("node")
-        .args([bootstrap_path.as_str(), "--port", &port.to_string()])
+        .args(args)
         .current_dir(server_dir)
         .spawn()
         .map_err(|e| format!("Không spawn được sidecar node: {e}"))?;
@@ -65,7 +85,11 @@ pub async fn spawn_dev(app: &AppHandle, server_dir: &str) -> Result<SidecarHandl
     Ok(SidecarHandle { child, port })
 }
 
-pub async fn spawn_release(app: &AppHandle) -> Result<SidecarHandle, String> {
+pub async fn spawn_release(
+    app: &AppHandle,
+    data_dir: &str,
+    bridge: &NativeBridge,
+) -> Result<SidecarHandle, String> {
     let port = find_available_port(DEFAULT_PORT)
         .ok_or_else(|| "Không tìm được port trống cho sidecar".to_string())?;
 
@@ -81,11 +105,19 @@ pub async fn spawn_release(app: &AppHandle) -> Result<SidecarHandle, String> {
         .map_err(|e| format!("Không resolve được resource dir 'public': {e}"))?;
     let public_dir = public_dir.to_string_lossy().to_string();
 
+    let mut args = vec![
+        "--port".to_string(),
+        port.to_string(),
+        "--public-dir".to_string(),
+        public_dir,
+    ];
+    args.extend(bridge_args(bridge, data_dir));
+
     let (rx, child) = app
         .shell()
         .sidecar("k8sql-server")
         .map_err(|e| format!("Không resolve được sidecar binary k8sql-server: {e}"))?
-        .args(["--port", &port.to_string(), "--public-dir", &public_dir])
+        .args(args)
         .spawn()
         .map_err(|e| format!("Không spawn được sidecar k8sql-server: {e}"))?;
 

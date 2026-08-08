@@ -1,5 +1,6 @@
 const fs = require("fs/promises");
 const path = require("path");
+const { getBaseDir } = require("../utils/base-dir");
 // Dùng fetch CỦA CHÍNH package "undici" (không phải fetch built-in Node.js) khi truyền dispatcher
 // là 1 Agent tạo từ package này — 2 undici khác major (vd Node.js bundle undici 7.x nhưng
 // package.json pin "undici" 8.x) đổi tên method nội bộ của handler (onConnect/onHeaders/onData →
@@ -8,7 +9,7 @@ const path = require("path");
 const { fetch: undiciFetch, Agent } = require("undici");
 const { AppError } = require("../utils/error");
 
-const rancherClustersConfigPath = path.resolve(__dirname, "..", "config", "rancher-clusters.json");
+const rancherClustersConfigPath = path.resolve(getBaseDir(), "config", "rancher-clusters.json");
 
 function getUndiciAgent(insecureTLS) {
   if (!insecureTLS) {

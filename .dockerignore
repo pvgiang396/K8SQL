@@ -1,0 +1,12 @@
+# Docker build context cho docker/windows-cross.Dockerfile — loại bỏ mọi thứ không cần thiết, tránh
+# gửi hàng GB build artifact/node_modules không liên quan vào context mỗi lần build image.
+node_modules
+server/node_modules
+server/build
+server/build-win
+src-tauri/target
+dist
+.cache
+.git
+.data
+server/.data

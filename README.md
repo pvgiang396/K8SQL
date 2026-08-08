@@ -41,6 +41,27 @@ curl http://127.0.0.1:4210/health
 
 ## Build bản cài đặt thật (release)
 
+**Cách khuyến nghị — 1 lệnh duy nhất, tự nhận diện OS hiện tại:**
+
+```bash
+npm install                              # 1 lần, cài dependency cho script build (root package.json)
+node scripts/build-cross-platform.mjs    # build native cho OS hiện tại + thử cross-build thêm nếu khả thi
+```
+
+- Chạy trên **Linux** → build `.deb` native cho Linux, **kèm thử cross-build Windows qua Docker**
+  (`.exe` NSIS, xem "Cross-build Windows từ Linux" bên dưới — hướng KHÔNG CHÍNH THỨC, có thể lỗi).
+- Chạy trên **macOS**/**Windows** → chỉ build native cho đúng OS đó (chưa hỗ trợ cross sang OS khác
+  từ 2 OS này).
+- **macOS luôn phải build TRÊN máy Mac thật** (hoặc CI runner macOS) — không có cách nào build được
+  từ Linux/Docker, đây là giới hạn của Apple (không cho chạy Xcode/SDK macOS ngoài phần cứng Apple),
+  không phải thiếu cấu hình.
+- Muốn chỉ định target tường minh: `node scripts/build-cross-platform.mjs --targets linux,windows`.
+
+File cài đặt ra `dist/<platform>-<arch>/` (vd `dist/linux-x64/k8sql_0.1.0_amd64.deb`).
+
+**Chi tiết bên trong** (dùng khi cần debug từng bước riêng lẻ, tương đương những gì
+`scripts/build-cross-platform.mjs` gọi tự động):
+
 ```bash
 # 1. Đóng gói Node backend thành 1 binary SEA (server/build/k8sql-server)
 cd server && npm run build:sea
@@ -49,9 +70,22 @@ cd server && npm run build:sea
 cp build/k8sql-server ../src-tauri/binaries/k8sql-server-<target-triple>
 chmod +x ../src-tauri/binaries/k8sql-server-<target-triple>
 
-# 3. Build installer (Linux ví dụ .deb/.AppImage)
-cd ../src-tauri && cargo tauri build --bundles deb,appimage
+# 3. Build installer (Linux ví dụ .deb — AppImage cần FUSE hoạt động trên máy build, không phải
+#    lúc nào cũng có sẵn, xem cảnh báo trong scripts/lib/build-native.mjs)
+cd ../src-tauri && cargo tauri build --bundles deb
 ```
 
-SEA build phải chạy TRÊN đúng OS/arch đích (không cross-compile được) — xem "Sidecar packaging"
-trong plan/CLAUDE.md. Máy đích sau khi cài **không cần Node.js** — binary SEA tự mang runtime.
+Máy đích sau khi cài **không cần Node.js** — binary SEA tự mang runtime.
+
+### Cross-build Windows từ Linux
+
+Bước Node SEA cho Windows **build được từ Linux, không cần Docker** — chỉ cần tải `node.exe` bản
+Windows thật (từ nodejs.org) làm nơi `postject` tiêm blob vào (đã tự verify: `postject` là module
+WASM portable, tự nhận diện định dạng PE từ magic bytes của chính file, không phụ thuộc OS đang
+chạy). Phần vỏ Tauri/Rust (GUI + trình cài NSIS) mới thật sự cần cross-compile — dùng Docker
+(`docker/windows-cross.Dockerfile`, target `x86_64-pc-windows-gnu` qua MinGW).
+
+**Đây là hướng KHÔNG CHÍNH THỨC** — Tauri khuyến nghị build native trên Windows thật hoặc CI runner
+Windows (MSVC toolchain). Cross-compile bằng GNU toolchain có rủi ro thật chưa verify hết: tương tác
+WebView2/COM bindings hoặc script NSIS có thể lỗi. Nếu `scripts/build-cross-platform.mjs` báo lỗi ở
+bước này, dùng máy/VM Windows thật hoặc GitLab CI runner Windows thay vì cố sửa tiếp hướng Docker.

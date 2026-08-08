@@ -1,0 +1,14 @@
+{
+  "name": "k8sql-workspace",
+  "version": "0.1.0",
+  "description": "Root orchestrator scripts cho k8sql (build đa nền tảng) — KHÔNG phải package chính, xem server/package.json cho backend Node và src-tauri/Cargo.toml cho shell Rust.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-cross-platform.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "postject": "^1.0.0-alpha.6"
+  }
+}

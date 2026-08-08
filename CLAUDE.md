@@ -174,7 +174,45 @@ k8sql/
   `tauri-plugin-autostart` **đã dùng xong ở Phase 3** (không cần làm lại). Xoá mọi script cài đặt
   bash/PowerShell cũ (không port sang k8sql, xem "Việc KHÔNG port" bên dưới — hiện chưa từng copy
   sang nên thực ra không có gì phải xoá, chỉ cần xác nhận không ai lỡ thêm lại).
-- [ ] **Phase 6** — CI 3 runner GitLab (`.gitlab-ci.yml`), build installer 3 nền tảng.
+- [x] **Phase 6 (một phần) — lệnh build đa nền tảng local, chưa phải CI thật**:
+  `scripts/build-cross-platform.mjs` (root `k8sql/`, không phải `server/scripts/` — orchestrator
+  gọi cả `server/` lẫn `src-tauri/`) — 1 lệnh tự nhận diện OS hiện tại, build native cho đúng OS đó
+  (`scripts/lib/build-native.mjs`, gom lại luồng thủ công cũ) + thử cross-build Windows từ Linux
+  (`scripts/lib/build-windows-cross.mjs` + `docker/windows-cross.Dockerfile`).
+  - **Sửa 1 hiểu nhầm trước đó**: tưởng "SEA bắt buộc build từ đúng binary Node của OS/arch đích,
+    không cross-compile được" — SAI 1 phần. Đã tự verify: bước SEA build được TỪ LINUX cho Windows
+    **không cần Docker** — chỉ cần tải `node.exe` bản Windows thật (nodejs.org, không cần chạy),
+    `postject` (module WASM portable, tự đọc dist/api.js xác nhận: tự nhận diện định dạng
+    PE/ELF/Mach-O từ magic bytes CỦA CHÍNH FILE, không dựa `process.platform`) tiêm blob vào file đó
+    ngay trên Linux — output là file PE32+ hợp lệ thật (verify bằng `file` command +tự check magic
+    bytes trong code). Phần THẬT SỰ không cross-compile được chỉ là vỏ Tauri/Rust (GUI cần link
+    `webkit2gtk`/`WebView2`/`WKWebView` đúng OS) + trình đóng gói cài đặt.
+  - **Windows** (Rust/Tauri qua Docker, target `x86_64-pc-windows-gnu` MinGW): **ĐÃ VERIFY THÀNH
+    CÔNG THẬT** — `node scripts/build-cross-platform.mjs` (mặc định trên Linux) chạy trọn 1 lệnh ra
+    cả `dist/linux-x64/k8sql_0.1.0_amd64.deb` lẫn `dist/windows-x64/k8sql_0.1.0_x64-setup.exe`, xác
+    nhận bằng `file` (`PE32 executable ... Nullsoft Installer self-extracting archive`) + ownership
+    đúng user thường (không phải root). Rủi ro WebView2/COM binding lo trước đó **KHÔNG xảy ra** —
+    `webview2-com` compile sạch qua GNU target. Vẫn giữ nguyên cảnh báo **KHÔNG CHÍNH THỨC** (Tauri
+    khuyến nghị build native Windows thật/CI runner Windows dùng MSVC, không phải GNU) vì chưa verify
+    được app Windows thật sự MỞ ĐÚNG trên máy Windows thật (máy dev không có Windows để tự chạy thử).
+    2 bug thật đã gặp + fix khi làm bước này (đã sửa vào code, không chỉ note lại):
+    1. Docker named volume (`k8sql-windows-cross-target`) dùng cache `target/` KHÔNG đọc trực tiếp
+       được từ host — script cũ tìm sai chỗ dù build container đã "Finished 1 bundle" thành công. Fix:
+       để chính container `cp` kết quả vào `/work/dist/windows-x64` (bind-mount thật) trước khi thoát.
+    2. Container mặc định chạy root → ghi file `root:root` vào `dist/` bind-mount, cần sudo mới xoá
+       được (vi phạm nguyên tắc tránh sudo của workspace). Fix: thêm `--user uid:gid` (từ
+       `os.userInfo()`) + `-e HOME=/tmp`. Hệ quả kéo theo: named volume MỚI kế thừa ownership root từ
+       thư mục gốc trong image (`/usr/local/cargo` trong `rust:1-bookworm` thuộc root) → lần build đầu
+       sau khi đổi `--user` luôn lỗi `Permission denied`. Fix: `buildWindowsRustViaDocker()` tự chạy 1
+       container tạm (`alpine chown -R uid:gid`) trên cả 2 volume cache TRƯỚC mỗi lần build (idempotent,
+       không hại gì nếu ownership đã đúng) — không bắt user tự chạy lệnh chown thủ công nữa.
+  - **macOS**: **KHÔNG có cách nào cross-build qua Docker** — Apple cấm chạy Xcode/SDK macOS trên
+    phần cứng không phải Apple (giới hạn pháp lý+kỹ thuật của Apple, không phải thiếu cấu hình).
+    `scripts/build-cross-platform.mjs` cố ý KHÔNG đưa `darwin` vào target mặc định khi chạy trên
+    Linux, chỉ in cảnh báo rõ ràng nếu bị gọi tường minh (`--targets macos`) — không giả vờ build.
+  - **CHƯA làm**: `.gitlab-ci.yml` thật (CI 3 runner GitLab) — script này chỉ chạy LOCAL trên máy
+    dev, chưa tích hợp CI. `apple-native`/`windows-native` (keyring, xem bug đã fix ở dưới) vẫn CHƯA
+    verify trên máy Windows/macOS thật — chỉ compile-check được.
 - [ ] **Phase 7** — Smoke-test tương thích API, cập nhật `r3workspace/CLAUDE.md` biết `K8SQL_URL`
   (đã thêm ghi chú tham khảo sơ bộ, chưa đổi mặc định — xem `r3workspace/CLAUDE.md`).
 

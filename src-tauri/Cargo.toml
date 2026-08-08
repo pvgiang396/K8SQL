@@ -8,10 +8,14 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-autostart = "2"
+# Chặn mở nhiều instance cùng lúc (đóng cửa sổ giờ chỉ ẩn, không thoát — nếu không có guard này,
+# bấm icon desktop lần 2 trong lúc app đã chạy nền sẽ spawn thêm 1 sidecar Node + tranh chấp cùng 1
+# SQLite data dir). Instance thứ 2 chỉ show lại cửa sổ instance đầu, không tự chạy.
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

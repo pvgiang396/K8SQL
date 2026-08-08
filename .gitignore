@@ -2,6 +2,7 @@ node_modules/
 server/dist/
 server/build/
 server/build-win/
+server/.data/
 dist/
 .cache/
 .env

@@ -39,6 +39,24 @@ cd server && node src/bootstrap.ts --port 4210
 curl http://127.0.0.1:4210/health
 ```
 
+## System tray + chế độ chạy nền
+
+- Mở bình thường (`k8sql`, desktop shortcut/taskbar) → cửa sổ **và** tray icon xuất hiện đồng thời.
+  Menu tray: `Open` (hiện lại cửa sổ) / `Exit` (thoát THẬT — kill sidecar + thoát tiến trình).
+- Đóng cửa sổ bằng nút X **không thoát app** — chỉ ẩn cửa sổ, sidecar + tray icon vẫn chạy nền. Chỉ
+  `Exit` từ tray mới thoát thật.
+- `k8sql --tray` (hoặc `cargo tauri dev -- -- --tray` lúc dev) → chạy nền ngay từ đầu, **không bật
+  cửa sổ**, chỉ hiện tray icon. Dùng khi cần gọi API mà không muốn cửa sổ tự bật lên (AI dùng cách
+  này để tự khởi động k8sql, xem `CLAUDE.md` phần "AI dùng k8sql").
+- Bật toggle "Khởi động cùng hệ thống" (popup CẤU HÌNH CÀI ĐẶT) → app tự chạy lúc đăng nhập máy ở
+  **chế độ tray-only** (tương đương `--tray`), không tự bật cửa sổ.
+- Mở app lần 2 trong lúc đã chạy (dù đang tray-only hay có cửa sổ) → không spawn instance mới, chỉ
+  hiện lại cửa sổ của instance đang chạy (`tauri-plugin-single-instance`) — tránh 2 sidecar tranh
+  chấp cùng 1 SQLite data dir.
+- **Hạn chế chưa verify**: hành vi click tray icon (mở menu vs "activate") phụ thuộc protocol tray
+  của từng OS/desktop environment — chỉ tự test được trên Linux (Cinnamon/AppIndicator). Icon tray
+  dùng lại icon app đã bundle (màu), chưa có bản "template" đơn sắc theo quy ước macOS menu bar.
+
 ## Build bản cài đặt thật (release)
 
 **Cách khuyến nghị — 1 lệnh duy nhất, tự nhận diện OS hiện tại:**
@@ -57,7 +75,10 @@ node scripts/build-cross-platform.mjs    # build native cho OS hiện tại + th
   không phải thiếu cấu hình.
 - Muốn chỉ định target tường minh: `node scripts/build-cross-platform.mjs --targets linux,windows`.
 
-File cài đặt ra `dist/<platform>-<arch>/` (vd `dist/linux-x64/k8sql_0.1.0_amd64.deb`).
+File cài đặt ra `dist/<platform>-<arch>/`:
+- Linux → `dist/linux-x64/k8sql_0.1.0_amd64.deb`
+- Windows → `dist/windows-x64/k8sql_0.1.0_x64-setup.exe`
+- macOS → `dist/darwin-<arch>/` (chỉ có khi build TRÊN máy Mac thật, xem lưu ý macOS ở trên)
 
 **Chi tiết bên trong** (dùng khi cần debug từng bước riêng lẻ, tương đương những gì
 `scripts/build-cross-platform.mjs` gọi tự động):

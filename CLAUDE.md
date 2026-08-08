@@ -215,6 +215,49 @@ k8sql/
     verify trên máy Windows/macOS thật — chỉ compile-check được.
 - [ ] **Phase 7** — Smoke-test tương thích API, cập nhật `r3workspace/CLAUDE.md` biết `K8SQL_URL`
   (đã thêm ghi chú tham khảo sơ bộ, chưa đổi mặc định — xem `r3workspace/CLAUDE.md`).
+- [x] **Phase 8 — System tray + chế độ chạy nền, ĐÃ VERIFY THẬT trên Linux (không phải chỉ compile)**:
+  `src-tauri/src/main.rs` — thêm `tauri::tray::TrayIconBuilder` (menu `Open`/`Exit`, dùng lại
+  `app.default_window_icon()` — chưa có asset tray riêng) + `tauri-plugin-single-instance` (đăng ký
+  ĐẦU TIÊN, bắt buộc theo yêu cầu plugin). Cần feature `tray-icon` trên crate `tauri` (Cargo.toml,
+  trước đó `features = []` không đủ để dùng `tauri::tray::*`/`tauri::menu::*`).
+  - Cờ `--tray` (đọc qua `std::env::args()`, không dùng `clap`): dựng cửa sổ nhưng không `.show()` —
+    chỉ tray icon xuất hiện. `tauri_plugin_autostart::init(..., Some(vec!["--tray"]))` (trước đó
+    `None`) — OS tự khởi động app lúc đăng nhập giờ luôn ở chế độ tray-only, không tự bật cửa sổ.
+  - `on_window_event` `CloseRequested` đổi hẳn: trước đây shutdown sidecar + để cửa sổ đóng thật, giờ
+    `api.prevent_close()` + `window.hide()` — sidecar/tray icon vẫn sống. Logic shutdown cũ chuyển
+    nguyên vào `quit_app()`, chỉ gọi từ menu tray "Exit".
+  - `tauri-plugin-single-instance`: instance thứ 2 khởi chạy chỉ gọi `show_main_window()` trên
+    instance gốc (bỏ qua argv của instance thứ 2) — không spawn thêm sidecar. Cần thiết vì cả 2
+    instance dùng chung 1 `app_data_dir()` (SQLite) — không có guard này sẽ tranh chấp file khi user
+    bấm icon desktop trong lúc app đã chạy nền (do AI mở hoặc do autostart).
+  - **Đã tự verify thật** (không chỉ đọc code, có bằng chứng cụ thể — xem lịch sử test trong phiên
+    làm feature này): `cargo check` sạch; cửa sổ+tray cùng xuất hiện khi mở bình thường (`wmctrl -l`
+    thấy cửa sổ, D-Bus `org.kde.StatusNotifierWatcher` thấy `tray_icon_tray_app_<pid>` đăng ký);
+    đóng cửa sổ bằng đúng window ID → biến mất khỏi `wmctrl -l` nhưng sidecar (`curl /health`) + tiến
+    trình vẫn sống; `k8sql --tray` → không cửa sổ nào trong `wmctrl -l` nhưng tray + sidecar có; bật
+    toggle "Khởi động cùng hệ thống" → `~/.config/autostart/*.desktop` có `Exec=... --tray`; mở
+    instance thứ 2 trong lúc instance `--tray` đang chạy → không có sidecar/process thứ 2
+    (`ps aux` xác nhận), cửa sổ instance gốc tự hiện lên (chứng minh gián tiếp `show_main_window()`
+    hoạt động đúng — dùng chung code path với tray menu "Open"/click tray icon).
+  - **CHƯA tự click được qua UI thật** (menu tray "Open"/"Exit", click icon) — màn hình dev bị khoá
+    (screensaver) giữa lúc test, không tự ý mở khoá phiên user. Tin tưởng dựa trên: `show_main_window()`
+    đã verify gián tiếp qua single-instance test ở trên; `quit_app()` chỉ là logic shutdown CŨ (đã
+    chạy đúng nhiều lần trước đây trong `CloseRequested`) di chuyển sang chỗ gọi khác + `app.exit(0)`
+    (API chuẩn Tauri) — rủi ro thấp nhưng CHƯA click tay xác nhận 100%.
+  - **CHƯA verify trên macOS/Windows** — hành vi click tray icon (mở menu vs "activate") phụ thuộc
+    protocol tray riêng từng OS/DE, máy dev không có Mac/Windows thật. Icon tray dùng icon màu có
+    sẵn, macOS quy ước cần icon "template" đơn sắc cho menu bar — chưa làm riêng.
+  - **Lưu ý hành vi mới cho AI**: xem mục "AI dùng k8sql" bên dưới — không còn nhờ user mở app tay.
+
+## AI dùng k8sql
+
+Kiểm tra `curl -s -m 2 http://127.0.0.1:4210/health`. Nếu không phản hồi:
+1. Tự set `DISPLAY=:0` (đã verify hoạt động dù chạy qua Bash tool không kế thừa sẵn biến này — cùng
+   máy/user với phiên desktop, chỉ thiếu env var) rồi tự chạy `k8sql --tray &` (chế độ nền, không bật
+   cửa sổ, xem Phase 8) — không hỏi user mở tay.
+2. Đợi vài giây rồi `curl` lại `/health`.
+3. Chỉ nhắc user can thiệp tay nếu bước 1 cũng thất bại thật sự (vd không tìm thấy binary `k8sql`
+   trong PATH, hoặc không có `/tmp/.X11-unix/X0`/phiên desktop nào đang mở — máy chưa đăng nhập).
 
 ## Bug thật nghiêm trọng đã gặp + fix: `keyring` crate thiếu feature → secret KHÔNG persist
 

@@ -1,4 +1,3 @@
-const path = require("path");
 const express = require("express");
 
 // Route table PORT NGUYÊN VẸN từ k8sctl/app.js — không sửa logic controller/service nào ở đây.
@@ -9,7 +8,10 @@ const express = require("express");
 //     nạp từ file .env sang SQLite+keychain).
 //   - Không tự app.listen() ở cuối file — do bootstrap.ts gọi để còn set port/host theo cấu hình
 //     k8sql (port mặc định 4210, khác k8sctl 3210) và emit sự kiện "ready" cho sidecar lifecycle.
-//   - public/ nằm ở server/public (sibling của legacy/), không phải legacy/public.
+//   - Export createApp({publicDir}) thay vì app đã cấu hình sẵn — sau khi đóng gói SEA, __dirname
+//     không còn trỏ đúng vị trí file gốc trên đĩa (SEA bundle mọi thứ vào 1 file), nên đường dẫn
+//     static/public phải do bootstrap.ts tính (qua process.execPath) rồi truyền vào, không tự suy
+//     ra từ __dirname trong file này nữa.
 //   - Thêm POST /internal/shutdown (không có ở k8sctl gốc) để Tauri gọi graceful shutdown thay vì
 //     hard-kill process ngay — dọn tunnel DB đang mở qua dbtunnel.service.js trước khi thoát.
 
@@ -34,8 +36,9 @@ const dbConfigController = require("./controllers/db-config.controller");
 const settingsController = require("./controllers/settings.controller");
 const { errorMiddleware } = require("./utils/error");
 
-const app = express();
-app.use(express.json());
+function createApp({ publicDir }) {
+  const app = express();
+  app.use(express.json());
 
 app.get("/health", async (_req, res) => {
   res.json({ success: true, message: "ok" });
@@ -137,8 +140,9 @@ app.post("/internal/shutdown", async (_req, res) => {
 
 // UI web nhẹ (chọn connection, SQL editor có autocomplete, cây Object Explorer, xem kết quả) —
 // không build step, gọi same-origin tới đúng các API /sql/* ở trên. Đặt SAU mọi route API, TRƯỚC
-// 404 handler.
-app.use(express.static(path.join(__dirname, "..", "public")));
+// 404 handler. publicDir do bootstrap.ts tính (dev: cạnh legacy/, SEA: cạnh binary) — xem comment
+// đầu file.
+app.use(express.static(publicDir));
 
 app.use((_req, res) => {
   res.status(404).json({ success: false, message: "Endpoint not found." });
@@ -146,4 +150,7 @@ app.use((_req, res) => {
 
 app.use(errorMiddleware);
 
-module.exports = app;
+  return app;
+}
+
+module.exports = { createApp };

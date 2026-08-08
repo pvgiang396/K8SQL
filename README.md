@@ -9,12 +9,14 @@ schema lưu trữ, và lộ trình từng phase trong [`CLAUDE.md`](CLAUDE.md).
 
 ## Trạng thái hiện tại
 
-**Phase 1** (Tauri shell load UI hiện tại, chưa động vào config) — đang triển khai:
+**Phase 1 + Phase 2 hoàn tất** (xem chi tiết + bài học thật trong `CLAUDE.md`):
 
-- `server/legacy/` — toàn bộ controller/service/util port nguyên vẹn từ k8sctl (không sửa logic).
+- `server/legacy/` — toàn bộ controller/service/util port nguyên vẹn từ k8sctl (không sửa logic
+  nghiệp vụ; `app.js` export `createApp({publicDir})` thay vì tự tính đường dẫn qua `__dirname`).
 - `server/src/bootstrap.ts` — entry mới thay `app.listen()` cuối `app.js` gốc.
-- `src-tauri/` — Rust shell, Phase 1 spawn `node server/src/bootstrap.ts` ở dev mode (chưa đóng gói
-  Node SEA — xem Phase 2 trong `CLAUDE.md`).
+- `src-tauri/` — Rust shell: `cargo tauri dev` spawn thẳng `node` (đọc source TS trực tiếp);
+  `cargo tauri build` spawn binary Node SEA đã đóng gói (`k8sql-server`) — không cần Node hệ thống
+  trên máy đích.
 
 ## Chạy dev
 
@@ -36,3 +38,20 @@ Kiểm tra nhanh chỉ phần Node (không cần Rust):
 cd server && node src/bootstrap.ts --port 4210
 curl http://127.0.0.1:4210/health
 ```
+
+## Build bản cài đặt thật (release)
+
+```bash
+# 1. Đóng gói Node backend thành 1 binary SEA (server/build/k8sql-server)
+cd server && npm run build:sea
+
+# 2. Copy vào src-tauri/binaries/ đúng tên target-triple (lấy triple qua `rustc -Vv`)
+cp build/k8sql-server ../src-tauri/binaries/k8sql-server-<target-triple>
+chmod +x ../src-tauri/binaries/k8sql-server-<target-triple>
+
+# 3. Build installer (Linux ví dụ .deb/.AppImage)
+cd ../src-tauri && cargo tauri build --bundles deb,appimage
+```
+
+SEA build phải chạy TRÊN đúng OS/arch đích (không cross-compile được) — xem "Sidecar packaging"
+trong plan/CLAUDE.md. Máy đích sau khi cài **không cần Node.js** — binary SEA tự mang runtime.

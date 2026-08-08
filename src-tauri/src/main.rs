@@ -1,5 +1,7 @@
-// k8sql — Tauri shell. Phase 1: chỉ spawn sidecar Node (server/) ở dev mode + trỏ WebView vào đó,
-// chưa có SQLite/keychain/wizard (xem docs/plan các phase kế tiếp).
+// k8sql — Tauri shell. Debug build (`cargo tauri dev`): spawn thẳng `node server/src/bootstrap.ts`
+// từ PATH hệ thống (nhanh, đọc source TS trực tiếp). Release build (`cargo tauri build`): spawn
+// binary SEA `k8sql-server` qua `.sidecar()` — tự mang Node runtime, không cần Node hệ thống trên
+// máy đích. Xem `sidecar.rs` (spawn_dev/spawn_release).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ports;
@@ -17,18 +19,22 @@ fn main() {
         ))
         .setup(|app| {
             let app_handle = app.handle().clone();
-
-            // Phase 1: thư mục server/ nằm cạnh src-tauri/ trong lúc dev (repo monorepo layout).
-            // Từ Phase 2 trở đi, đường dẫn này đổi thành resource dir của gói SEA (Tauri quản lý).
-            let server_dir = app
-                .path()
-                .resolve("../server", tauri::path::BaseDirectory::Resource)
-                .ok()
-                .and_then(|p| p.to_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "../server".to_string());
+            // Chỉ dev mode cần server_dir (trỏ tới source TS) — release mode dùng sidecar binary
+            // đã tự chứa mọi thứ, không cần biết server/ nằm đâu.
+            let server_dir = if cfg!(debug_assertions) {
+                Some(resolve_server_dir(app)?)
+            } else {
+                None
+            };
 
             tauri::async_runtime::spawn(async move {
-                match sidecar::spawn_dev(&app_handle, &server_dir).await {
+                let spawn_result = if let Some(dir) = server_dir {
+                    sidecar::spawn_dev(&app_handle, &dir).await
+                } else {
+                    sidecar::spawn_release(&app_handle).await
+                };
+
+                match spawn_result {
                     Ok(handle) => {
                         let port = handle.port;
                         app_handle.manage(std::sync::Mutex::new(Some(handle)));
@@ -72,4 +78,20 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("Lỗi khi chạy k8sql");
+}
+
+/// Tìm thư mục `server/` cho DEV MODE ONLY (`spawn_dev()` cần source TS thật để chạy
+/// `node server/src/bootstrap.ts`). Release mode không gọi hàm này — sidecar binary SEA đã tự
+/// chứa toàn bộ code, chỉ resolve `public/` lúc runtime qua `process.execPath`
+/// (`server/src/bootstrap.ts::resolvePublicDir()`).
+///
+/// `server/` nằm cạnh `src-tauri/` trong repo — lấy qua `CARGO_MANIFEST_DIR` (hằng số biên dịch,
+/// không phụ thuộc cwd lúc chạy `cargo tauri dev`).
+fn resolve_server_dir(_app: &tauri::App) -> Result<String, Box<dyn std::error::Error>> {
+    let dev_server = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../server");
+    if dev_server.is_dir() {
+        return Ok(dev_server.to_string_lossy().to_string());
+    }
+
+    Err(format!("Không tìm thấy thư mục server/ (đã thử {})", dev_server.display()).into())
 }

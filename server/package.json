@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/bootstrap.ts",
     "dev": "node --watch src/bootstrap.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:sea": "node scripts/build-sea.mjs"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -26,6 +27,7 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.0.0",
     "esbuild": "^0.24.0",
+    "postject": "^1.0.0-alpha.6",
     "typescript": "^5.6.0"
   }
 }

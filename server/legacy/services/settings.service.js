@@ -271,6 +271,46 @@ async function listRancherClusterOptions({ rancherUrl, token, insecureTLS }) {
   return rancherClient.listClustersAdhoc({ rancherUrl, token, insecureTLS });
 }
 
+// Nhóm namespace (domain→cluster/project/namespace/deployment mapping, provider "rancher") — GHI
+// VÀO SQLITE (settingsRepo.upsertNamespaceGroups) rồi materialize lại config/namespaces.json, cùng
+// pattern saveRancherClusters/saveDbEnvironments ở trên. Route add-group cũ (provisionService,
+// ghi thẳng file) vẫn giữ lại cho tương thích API k8sctl gốc, nhưng UI/AI nên dùng route này để
+// mapping sống sót qua materialize/restart.
+function listNamespaceGroups() {
+  return settingsRepo.listNamespaceGroups();
+}
+
+async function saveNamespaceGroups(groups) {
+  if (!Array.isArray(groups)) {
+    throw new AppError('"groups" phải là 1 mảng.', 400);
+  }
+  const names = new Set();
+  for (const g of groups) {
+    if (!g || typeof g.name !== "string" || !g.name.trim()) {
+      throw new AppError('Mỗi nhóm phải có "name".', 400);
+    }
+    if (!g.namespace || typeof g.namespace !== "string") {
+      throw new AppError(`Nhóm "${g.name}" thiếu "namespace".`, 400);
+    }
+    if (!Array.isArray(g.domains) || g.domains.length === 0) {
+      throw new AppError(`Nhóm "${g.name}" phải có ít nhất 1 domain.`, 400);
+    }
+    const provider = g.provider || "rancher";
+    if (provider === "rancher" && (!g.rancherCluster || !g.projectId)) {
+      throw new AppError(`Nhóm "${g.name}" (provider rancher) thiếu "rancherCluster"/"projectId".`, 400);
+    }
+    if (names.has(g.name)) {
+      throw new AppError(`Tên nhóm trùng lặp: "${g.name}".`, 400);
+    }
+    names.add(g.name);
+  }
+
+  await settingsRepo.upsertNamespaceGroups(groups);
+  await materializeLegacyConfig(ROOT_DIR);
+
+  return { message: "Đã lưu danh sách nhóm namespace." };
+}
+
 module.exports = {
   getCurrentInstallInfo,
   applySettings,
@@ -284,5 +324,7 @@ module.exports = {
   listRancherClusterOptions,
   listDbEnvironments,
   saveDbEnvironments,
-  revealDbEnvironmentValue
+  revealDbEnvironmentValue,
+  listNamespaceGroups,
+  saveNamespaceGroups
 };

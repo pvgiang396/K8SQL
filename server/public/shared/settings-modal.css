@@ -442,6 +442,38 @@ a.sm-btn-test img {
   text-decoration: underline;
 }
 
+/* Danh sách con lặp lại trong 1 field (Domain/Service của Nhóm Namespace) — mỗi dòng 2 input +
+   nút xoá tuỳ chọn, xếp dọc, full width ô value giống .sm-cascade-cell. */
+.sm-field-value .sm-subrow-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sm-subrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sm-subrow input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sm-subrow select {
+  flex: 0 0 auto;
+  width: auto;
+}
+a.sm-btn-add-sub {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+a.sm-btn-add-sub:hover {
+  text-decoration: underline;
+}
+
 .sm-status {
   min-height: 16px;
   font-size: 12px;

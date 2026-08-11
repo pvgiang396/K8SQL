@@ -122,6 +122,8 @@ app.post("/settings/rancher-cluster-options", settingsController.listRancherClus
 app.post("/settings/rancher-projects-adhoc", settingsController.listRancherProjectsAdhoc);
 app.post("/settings/rancher-namespaces-adhoc", settingsController.listRancherNamespacesAdhoc);
 app.post("/settings/rancher-services-adhoc", settingsController.listRancherServicesAdhoc);
+app.get("/settings/namespace-groups", settingsController.listNamespaceGroups);
+app.post("/settings/namespace-groups", settingsController.saveNamespaceGroups);
 app.get("/settings/db-environments", settingsController.listDbEnvironments);
 app.post("/settings/db-environments", settingsController.saveDbEnvironments);
 app.post("/settings/db-environments/reveal-value", settingsController.revealDbEnvironmentValue);

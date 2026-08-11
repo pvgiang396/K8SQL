@@ -374,8 +374,10 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
   const autostartToggle = $("smAutostartToggle");
   const rancherBody = $("smRancherTableBody");
   const dbEnvBody = $("smDbEnvTableBody");
+  const groupBody = $("smGroupTableBody");
   const btnAddCluster = $("smBtnAddCluster");
   const btnAddDbEnv = $("smBtnAddDbEnv");
+  const btnAddGroup = $("smBtnAddGroup");
   const statusEl = $("smStatus");
   const btnClose = $("smBtnClose");
   const btnApply = $("smBtnApply");
@@ -384,7 +386,7 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     btnApply.textContent = applyLabel;
   }
 
-  const state = { rancherClusters: [], dbEnvironments: [] };
+  const state = { rancherClusters: [], dbEnvironments: [], namespaceGroups: [] };
 
   // resolveRancherTarget — quy về 1 trong 2 dạng payload gửi cho các endpoint "*-adhoc"/"*-for-db-env":
   // {rancherKey} nếu cluster env.rancherKey trỏ tới ĐÃ "Áp dụng" (đọc token qua .env ở server), hoặc
@@ -567,11 +569,16 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
           );
           return;
         }
-        const confirmed = await confirmDeleteWithKey({
-          keyLabel: "Rancher Key",
-          expectedKey: cluster.name,
-          itemLabel: cluster.rancherUrl || cluster.name
-        });
+        // cluster.name (Rancher Key) tự sinh từ Rancher URL — chưa gõ URL thì Key rỗng, và nút
+        // "Xóa ngay" của confirmDeleteWithKey chỉ bật khi gõ khớp expectedKey (không có cách nào
+        // gõ ra chuỗi rỗng để khớp) → bỏ qua bước gõ xác nhận cho cluster rỗng này.
+        const confirmed = cluster.name
+          ? await confirmDeleteWithKey({
+              keyLabel: "Rancher Key",
+              expectedKey: cluster.name,
+              itemLabel: cluster.rancherUrl || cluster.name
+            })
+          : true;
         if (!confirmed) return;
         const [removed] = state.rancherClusters.splice(index, 1);
         renderRancherTable();
@@ -996,6 +1003,17 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       row.appendChild(existingPodField.field);
       const existingPodCell = existingPodField.value;
 
+      // Project/Namespace/DB Host-Port/Pod có sẵn chỉ có ý nghĩa khi đã gắn Rancher (mode
+      // k8s-tunnel) — ẩn hẳn khi Rancher = "Không dùng" thay vì để trống/disable gây rối mắt.
+      function updateFieldVisibility() {
+        const display = env.rancherKey ? "" : "none";
+        projectField.field.style.display = display;
+        namespaceField.field.style.display = display;
+        dbHostPortField.field.style.display = display;
+        existingPodField.field.style.display = display;
+      }
+      updateFieldVisibility();
+
       const locked = !env.isNew;
 
       const rancherSelect = document.createElement("select");
@@ -1289,6 +1307,430 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     });
   }
 
+  // ─── Nhóm Namespace (domain → cluster/project/namespace/deployment mapping) ───────────────────
+  // Chỉ hỗ trợ provider "rancher" qua UI này (đủ cho mọi use-case thật tính tới nay — nhóm
+  // provider "kubeconfig" cũ, nếu có, phải quản lý qua API /settings/namespace-groups trực tiếp).
+  // Cascade Project/Namespace tự viết riêng (không tái dùng buildCascadeCell()) vì hàm đó hardcode
+  // gọi lại renderDbEnvTable() ở 2 nhánh "chọn nhập tay"/"quay lại chọn từ danh sách" — tái dùng
+  // trực tiếp sẽ vẽ nhầm bảng khi thao tác trên bảng Nhóm Namespace.
+  function buildGroupCascadeCell({ options, currentValue, onSelect, manualField, manualPlaceholder, group }) {
+    const wrap = document.createElement("div");
+    wrap.className = "sm-cascade-cell";
+    const overrideKey = `_manualOverride_${manualField}`;
+    const manualOverride = Boolean(group[overrideKey]);
+    const hadPopulatedOptions = Array.isArray(options) && options.length > 0;
+
+    if (!manualOverride) {
+      if (options === "loading") {
+        const hint = document.createElement("div");
+        hint.className = "sm-cascade-hint";
+        hint.textContent = "Đang tải...";
+        wrap.appendChild(hint);
+      } else if (Array.isArray(options)) {
+        if (options.length) {
+          const select = document.createElement("select");
+          const emptyOpt = document.createElement("option");
+          emptyOpt.value = "";
+          emptyOpt.textContent = "-- chọn --";
+          select.appendChild(emptyOpt);
+          options.forEach((opt) => {
+            const o = document.createElement("option");
+            o.value = opt.value;
+            o.textContent = opt.label;
+            if (opt.value === currentValue) o.selected = true;
+            select.appendChild(o);
+          });
+          const manualOpt = document.createElement("option");
+          manualOpt.value = MANUAL_OVERRIDE_SENTINEL;
+          manualOpt.textContent = "-- nhập tay (không có trong danh sách) --";
+          select.appendChild(manualOpt);
+          select.addEventListener("change", () => {
+            if (select.value === MANUAL_OVERRIDE_SENTINEL) {
+              group[overrideKey] = true;
+              renderGroupsTable();
+              return;
+            }
+            onSelect(select.value);
+          });
+          wrap.appendChild(select);
+        } else {
+          const hint = document.createElement("div");
+          hint.className = "sm-cascade-hint";
+          hint.textContent = "Không có mục nào — nhập tay bên dưới.";
+          wrap.appendChild(hint);
+        }
+      } else if (options && options.error) {
+        const hint = document.createElement("div");
+        hint.className = "sm-cascade-hint error";
+        hint.textContent = `${options.message || "Không tải được."} — nhập tay bên dưới.`;
+        wrap.appendChild(hint);
+      }
+    }
+
+    const hasPopulatedSelect = !manualOverride && hadPopulatedOptions;
+    if (!hasPopulatedSelect) {
+      const manualInput = document.createElement("input");
+      manualInput.type = "text";
+      manualInput.autocomplete = "off";
+      manualInput.placeholder = manualPlaceholder || "hoặc nhập tay";
+      manualInput.value = currentValue || "";
+      manualInput.addEventListener("input", () => {
+        group[manualField] = manualInput.value.trim();
+      });
+      wrap.appendChild(manualInput);
+
+      if (manualOverride && hadPopulatedOptions) {
+        const backLink = document.createElement("a");
+        backLink.href = "#";
+        backLink.className = "sm-cascade-back";
+        backLink.textContent = "↺ Chọn lại từ danh sách";
+        backLink.addEventListener("click", (e) => {
+          e.preventDefault();
+          group[overrideKey] = false;
+          renderGroupsTable();
+        });
+        wrap.appendChild(backLink);
+      }
+    }
+
+    return wrap;
+  }
+
+  // fetchGroupCascade — GET rancherProjects/rancherNamespaces theo rancherKey ĐÃ LƯU (nhóm namespace
+  // chỉ hoạt động với Rancher cluster đã "Áp dụng" xong, có token thật trong .env — khác bảng
+  // Connection String vốn hỗ trợ cluster "isNew" ad-hoc, vì token ad-hoc chỉ tồn tại trong phiên UI
+  // hiện tại, không đáng để nhóm namespace phụ thuộc vào 1 giá trị chưa lưu bền).
+  async function fetchGroupCascade(group, level) {
+    const key = `_${level}`;
+    if (!group.rancherKey) {
+      group[key] = { error: true, message: "Chọn Rancher cluster trước." };
+      renderGroupsTable();
+      return;
+    }
+    group[key] = "loading";
+    renderGroupsTable();
+    try {
+      const url =
+        level === "projects"
+          ? `${endpoints.rancherProjects}?rancherKey=${encodeURIComponent(group.rancherKey)}`
+          : `${endpoints.rancherNamespaces}?rancherKey=${encodeURIComponent(group.rancherKey)}&projectId=${encodeURIComponent(group.projectId)}`;
+      const body = await fetch(url).then((r) => r.json());
+      if (body.success === false) throw new Error(body.message || "Không tải được danh sách.");
+      const data = body.data || [];
+      group[key] = level === "projects" ? data.map((p) => ({ value: p.id, label: p.name })) : data.map((ns) => ({ value: ns, label: ns }));
+    } catch (error) {
+      group[key] = { error: true, message: error.message || "Không tải được." };
+    }
+    renderGroupsTable();
+  }
+
+  // Gợi ý tên deployment (datalist, không ép buộc chọn) — tải 1 lần khi đã đủ rancherKey/projectId/
+  // namespace, cache vào group._serviceOptions.
+  async function fetchGroupServiceOptions(group) {
+    if (!group.rancherKey || !group.projectId || !group.namespace) return;
+    group._serviceOptions = "loading";
+    renderGroupsTable();
+    try {
+      const url = `${endpoints.rancherServices}?rancherKey=${encodeURIComponent(group.rancherKey)}&projectId=${encodeURIComponent(group.projectId)}&namespace=${encodeURIComponent(group.namespace)}`;
+      const body = await fetch(url).then((r) => r.json());
+      if (body.success === false) throw new Error(body.message || "Không tải được danh sách.");
+      group._serviceOptions = (body.data || []).map((s) => s.name);
+    } catch (error) {
+      group._serviceOptions = [];
+    }
+    renderGroupsTable();
+  }
+
+  function renderGroupsTable() {
+    groupBody.innerHTML = "";
+    state.namespaceGroups.forEach((group, index) => {
+      const row = document.createElement("div");
+      row.className = "sm-card";
+
+      const descHeader = createDescHeader({
+        index: index + 1,
+        getValue: () => group.description,
+        onCommit: (value) => {
+          group.description = value;
+        },
+        placeholder: "Mô tả (tuỳ chọn)",
+        icon: "/assets/k8s.png",
+        iconAlt: "Nhóm namespace",
+        labelPrefix: "Nhóm"
+      });
+      row.appendChild(descHeader.header);
+      const actionsCell = descHeader.actionsSlot;
+
+      const nameField = createField("Tên nhóm");
+      row.appendChild(nameField.field);
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.autocomplete = "off";
+      nameInput.placeholder = "vd: DVCCDDEMO_HUE";
+      nameInput.value = group.name || "";
+      nameInput.addEventListener("input", () => {
+        group.name = nameInput.value.trim();
+      });
+      nameField.value.appendChild(nameInput);
+
+      const clusterField = createField("Rancher Cluster");
+      row.appendChild(clusterField.field);
+      const clusterSelect = document.createElement("select");
+      const emptyClusterOpt = document.createElement("option");
+      emptyClusterOpt.value = "";
+      emptyClusterOpt.textContent = "-- chọn --";
+      clusterSelect.appendChild(emptyClusterOpt);
+      state.rancherClusters
+        .filter((c) => c.name && !c.isNew)
+        .forEach((c) => {
+          const o = document.createElement("option");
+          o.value = c.name;
+          o.textContent = c.description ? `${c.name} (${c.description})` : c.name;
+          if (c.name === group.rancherKey) o.selected = true;
+          clusterSelect.appendChild(o);
+        });
+      clusterSelect.title = "Chỉ liệt kê Rancher cluster ĐÃ lưu (bấm \"Áp dụng\" ở bảng Rancher trước nếu vừa thêm mới).";
+      clusterSelect.addEventListener("change", () => {
+        group.rancherKey = clusterSelect.value;
+        group.projectId = "";
+        group.namespace = "";
+        group._projects = null;
+        group._namespaces = null;
+        group._serviceOptions = null;
+        group._manualOverride_projectId = false;
+        group._manualOverride_namespace = false;
+        if (group.rancherKey) fetchGroupCascade(group, "projects");
+        renderGroupsTable();
+      });
+      clusterField.value.appendChild(clusterSelect);
+
+      const projectField = createField("Project");
+      row.appendChild(projectField.field);
+      projectField.value.appendChild(
+        buildGroupCascadeCell({
+          options: group._projects,
+          currentValue: group.projectId,
+          manualField: "projectId",
+          manualPlaceholder: "vd: p-xxxxx",
+          group,
+          onSelect: (value) => {
+            group.projectId = value;
+            group.namespace = "";
+            group._namespaces = null;
+            group._serviceOptions = null;
+            group._manualOverride_namespace = false;
+            if (value) fetchGroupCascade(group, "namespaces");
+            renderGroupsTable();
+          }
+        })
+      );
+
+      const namespaceField = createField("Namespace");
+      row.appendChild(namespaceField.field);
+      namespaceField.value.appendChild(
+        buildGroupCascadeCell({
+          options: group._namespaces,
+          currentValue: group.namespace,
+          manualField: "namespace",
+          manualPlaceholder: "hoặc nhập tay Namespace",
+          group,
+          onSelect: (value) => {
+            group.namespace = value;
+            group._serviceOptions = null;
+            renderGroupsTable();
+            fetchGroupServiceOptions(group);
+          }
+        })
+      );
+
+      // Domains — danh sách {url, env}, tối thiểu 1 dòng.
+      const domainsField = createField("Domain (URL)");
+      row.appendChild(domainsField.field);
+      const domainsWrap = document.createElement("div");
+      domainsWrap.className = "sm-subrow-list";
+      if (!group.domains || !group.domains.length) group.domains = [{ url: "", env: "" }];
+      group.domains.forEach((d, dIndex) => {
+        const subrow = document.createElement("div");
+        subrow.className = "sm-subrow";
+        const urlInput = document.createElement("input");
+        urlInput.type = "text";
+        urlInput.autocomplete = "off";
+        urlInput.placeholder = "https://domain.example.com";
+        urlInput.value = d.url || "";
+        urlInput.addEventListener("input", () => {
+          d.url = urlInput.value.trim();
+        });
+        const envSelect = document.createElement("select");
+        ["", "prod", "test"].forEach((v) => {
+          const o = document.createElement("option");
+          o.value = v;
+          o.textContent = v || "(không gắn env)";
+          if (v === (d.env || "")) o.selected = true;
+          envSelect.appendChild(o);
+        });
+        envSelect.title = "env=\"prod\" — --deploy/--configmap tự báo Telegram sau khi xong.";
+        envSelect.addEventListener("change", () => {
+          d.env = envSelect.value || undefined;
+        });
+        subrow.appendChild(urlInput);
+        subrow.appendChild(envSelect);
+        if (group.domains.length > 1) {
+          const removeBtn = document.createElement("a");
+          removeBtn.href = "#";
+          removeBtn.className = "sm-btn-delete";
+          removeBtn.innerHTML = '<img src="/assets/delete.png" alt="" />';
+          removeBtn.title = "Xoá domain này";
+          removeBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            group.domains.splice(dIndex, 1);
+            renderGroupsTable();
+          });
+          subrow.appendChild(removeBtn);
+        }
+        domainsWrap.appendChild(subrow);
+      });
+      const addDomainBtn = document.createElement("a");
+      addDomainBtn.href = "#";
+      addDomainBtn.className = "sm-btn-add-sub";
+      addDomainBtn.textContent = "+ Thêm domain";
+      addDomainBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        group.domains.push({ url: "", env: "" });
+        renderGroupsTable();
+      });
+      domainsWrap.appendChild(addDomainBtn);
+      domainsField.value.appendChild(domainsWrap);
+
+      // Services — danh sách {key, deployment}, key khớp tham số <service> của node index.js --deploy
+      // (r3svc/r3web/r3auth...), deployment là tên Deployment thật trên k8s.
+      const servicesField = createField("Service → Deployment");
+      row.appendChild(servicesField.field);
+      const servicesWrap = document.createElement("div");
+      servicesWrap.className = "sm-subrow-list";
+      if (!group.services || !group.services.length) group.services = [{ key: "", deployment: "" }];
+      const datalistId = `sm-deploy-suggest-${index}`;
+      group.services.forEach((s, sIndex) => {
+        const subrow = document.createElement("div");
+        subrow.className = "sm-subrow";
+        const keyInput = document.createElement("input");
+        keyInput.type = "text";
+        keyInput.autocomplete = "off";
+        keyInput.placeholder = "vd: r3web";
+        keyInput.value = s.key || "";
+        keyInput.addEventListener("input", () => {
+          s.key = keyInput.value.trim();
+        });
+        const deployInput = document.createElement("input");
+        deployInput.type = "text";
+        deployInput.autocomplete = "off";
+        deployInput.placeholder = "Tên Deployment thật trên k8s";
+        deployInput.value = s.deployment || "";
+        deployInput.setAttribute("list", datalistId);
+        deployInput.addEventListener("input", () => {
+          s.deployment = deployInput.value.trim();
+        });
+        subrow.appendChild(keyInput);
+        subrow.appendChild(deployInput);
+        if (group.services.length > 1) {
+          const removeBtn = document.createElement("a");
+          removeBtn.href = "#";
+          removeBtn.className = "sm-btn-delete";
+          removeBtn.innerHTML = '<img src="/assets/delete.png" alt="" />';
+          removeBtn.title = "Xoá service này";
+          removeBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            group.services.splice(sIndex, 1);
+            renderGroupsTable();
+          });
+          subrow.appendChild(removeBtn);
+        }
+        servicesWrap.appendChild(subrow);
+      });
+      const addServiceBtn = document.createElement("a");
+      addServiceBtn.href = "#";
+      addServiceBtn.className = "sm-btn-add-sub";
+      addServiceBtn.textContent = "+ Thêm service";
+      addServiceBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        group.services.push({ key: "", deployment: "" });
+        renderGroupsTable();
+      });
+      servicesWrap.appendChild(addServiceBtn);
+      if (Array.isArray(group._serviceOptions) && group._serviceOptions.length) {
+        const datalist = document.createElement("datalist");
+        datalist.id = datalistId;
+        group._serviceOptions.forEach((name) => {
+          const o = document.createElement("option");
+          o.value = name;
+          datalist.appendChild(o);
+        });
+        servicesWrap.appendChild(datalist);
+      }
+      servicesField.value.appendChild(servicesWrap);
+
+      const deleteGroupBtn = document.createElement("a");
+      deleteGroupBtn.href = "#";
+      deleteGroupBtn.className = "sm-btn-delete";
+      deleteGroupBtn.innerHTML = '<img src="/assets/delete.png" alt="" />';
+      deleteGroupBtn.title = "Xoá nhóm";
+      deleteGroupBtn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        const confirmed = group.name
+          ? await confirmDeleteWithKey({ keyLabel: "Tên nhóm", expectedKey: group.name, itemLabel: group.name })
+          : true;
+        if (!confirmed) return;
+        const [removed] = state.namespaceGroups.splice(index, 1);
+        renderGroupsTable();
+        if (!removed.isNew) {
+          try {
+            await persistNamespaceGroups();
+            setStatus(`Đã xoá nhóm "${removed.name}".`, "success");
+          } catch (error) {
+            state.namespaceGroups.splice(index, 0, removed);
+            renderGroupsTable();
+            setStatus(`Xoá nhóm "${removed.name}" thất bại: ${error.message}`, "error");
+          }
+        }
+      });
+      actionsCell.appendChild(deleteGroupBtn);
+
+      groupBody.appendChild(row);
+    });
+  }
+
+  async function persistNamespaceGroups() {
+    await fetch(endpoints.namespaceGroups, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        groups: state.namespaceGroups.map((g) => ({
+          name: g.name,
+          provider: "rancher",
+          rancherCluster: g.rancherKey,
+          projectId: g.projectId,
+          namespace: g.namespace,
+          domains: (g.domains || []).filter((d) => d.url).map((d) => ({ url: d.url, env: d.env || undefined })),
+          services: Object.fromEntries((g.services || []).filter((s) => s.key && s.deployment).map((s) => [s.key, { deployment: s.deployment }]))
+        }))
+      })
+    }).then(assertOk);
+  }
+
+  btnAddGroup.addEventListener("click", (e) => {
+    e.preventDefault();
+    state.namespaceGroups.push({
+      name: "",
+      rancherKey: "",
+      projectId: "",
+      namespace: "",
+      domains: [{ url: "", env: "" }],
+      services: [{ key: "", deployment: "" }],
+      description: "",
+      isNew: true
+    });
+    renderGroupsTable();
+  });
+
   btnAddCluster.addEventListener("click", (e) => {
     e.preventDefault();
     state.rancherClusters.push({
@@ -1387,9 +1829,24 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
           throw new Error("Chọn Rancher/Namespace/DB Host hoặc nhập Connection String trước khi lưu.");
         }
       }
+      {
+        const groupNames = new Set();
+        for (const g of state.namespaceGroups) {
+          if (!g.name) throw new Error("Mỗi nhóm namespace phải có Tên nhóm.");
+          if (groupNames.has(g.name)) throw new Error(`Tên nhóm namespace trùng lặp: "${g.name}".`);
+          groupNames.add(g.name);
+          if (!g.rancherKey || !g.projectId || !g.namespace) {
+            throw new Error(`Nhóm "${g.name}" thiếu Rancher Cluster/Project/Namespace.`);
+          }
+          if (!(g.domains || []).some((d) => d.url)) {
+            throw new Error(`Nhóm "${g.name}" phải có ít nhất 1 domain.`);
+          }
+        }
+      }
 
       await persistRancherClusters();
       await persistDbEnvironments();
+      await persistNamespaceGroups();
 
       // KHÔNG gửi "PORT" — UI này không có field chỉnh port (xem CLAUDE.md "Port KHÔNG còn hiển
       // thị trên UI"), giá trị PORT thật của mỗi máy có thể khác 3210 (vd đã đổi tay trong .env để
@@ -1430,16 +1887,28 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
   }
 
   async function load() {
-    const [current, clusters, dbEnvironments] = await Promise.all([
+    const [current, clusters, dbEnvironments, namespaceGroups] = await Promise.all([
       fetch(endpoints.current).then((r) => r.json()),
       fetch(endpoints.rancherClusters).then((r) => r.json()),
-      fetch(endpoints.dbEnvironments).then((r) => r.json())
+      fetch(endpoints.dbEnvironments).then((r) => r.json()),
+      endpoints.namespaceGroups ? fetch(endpoints.namespaceGroups).then((r) => r.json()) : Promise.resolve({ data: [] })
     ]);
 
     state.rancherClusters = (clusters.data || []).map((c) => ({ ...c, tokenValue: "", isNew: false }));
     state.dbEnvironments = (dbEnvironments.data || []).map((e) => ({ ...e, urlValue: "", isNew: false }));
+    state.namespaceGroups = (namespaceGroups.data || []).map((g) => ({
+      name: g.name,
+      rancherKey: g.rancherCluster || "",
+      projectId: g.projectId || "",
+      namespace: g.namespace,
+      domains: (g.domains || []).map((d) => ({ url: d.url, env: d.env || "" })),
+      services: Object.entries(g.services || {}).map(([key, v]) => ({ key, deployment: v.deployment || "" })),
+      description: "",
+      isNew: false
+    }));
     renderRancherTable();
     renderDbEnvTable();
+    renderGroupsTable();
   }
 
   await load();

@@ -15,6 +15,21 @@ interface RancherClusterInput {
   description?: string;
 }
 
+interface NamespaceGroupDomainInput {
+  url: string;
+  env?: string;
+}
+
+interface NamespaceGroupInput {
+  name: string;
+  provider: string;
+  rancherCluster?: string;
+  projectId?: string;
+  namespace: string;
+  domains: NamespaceGroupDomainInput[];
+  services?: Record<string, unknown>;
+}
+
 interface DbEnvironmentInput {
   name: string;
   description?: string;
@@ -136,6 +151,95 @@ async function upsertDbEnvironments(environments: DbEnvironmentInput[]): Promise
   }
 }
 
+// namespace_groups — replace-all theo name, giống upsertRancherClusters/upsertDbEnvironments.
+// namespace_group_domains xoá hết + tạo lại theo group (ON DELETE CASCADE khi xoá group, nhưng khi
+// UPDATE 1 group đang tồn tại vẫn phải tự xoá domain cũ trước vì domains có thể đổi cả số lượng).
+async function upsertNamespaceGroups(groups: NamespaceGroupInput[]): Promise<void> {
+  const db = getDb();
+  const existing = db.prepare("SELECT id, name FROM namespace_groups").all() as {
+    id: number;
+    name: string;
+  }[];
+  const incomingNames = new Set(groups.map((g) => g.name));
+
+  for (const row of existing) {
+    if (!incomingNames.has(row.name)) {
+      db.prepare("DELETE FROM namespace_groups WHERE id = ?").run(row.id);
+    }
+  }
+
+  for (const g of groups) {
+    let rancherClusterId: number | null = null;
+    if (g.rancherCluster) {
+      const cluster = db.prepare("SELECT id FROM rancher_clusters WHERE name = ?").get(g.rancherCluster) as
+        | { id: number }
+        | undefined;
+      rancherClusterId = cluster ? cluster.id : null;
+    }
+    const servicesJson = JSON.stringify(g.services || {});
+
+    const found = existing.find((x) => x.name === g.name);
+    let groupId: number;
+    if (found) {
+      db.prepare(
+        `UPDATE namespace_groups SET provider=?, namespace=?, rancher_cluster_id=?, project_id=?, services_json=?
+         WHERE id=?`
+      ).run(g.provider, g.namespace, rancherClusterId, g.projectId || null, servicesJson, found.id);
+      groupId = found.id;
+    } else {
+      const info = db
+        .prepare(
+          `INSERT INTO namespace_groups (provider, name, namespace, rancher_cluster_id, project_id, services_json)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        )
+        .run(g.provider, g.name, g.namespace, rancherClusterId, g.projectId || null, servicesJson);
+      groupId = Number(info.lastInsertRowid);
+    }
+
+    db.prepare("DELETE FROM namespace_group_domains WHERE group_id = ?").run(groupId);
+    for (const d of g.domains || []) {
+      db.prepare("INSERT INTO namespace_group_domains (group_id, url, env) VALUES (?, ?, ?)").run(
+        groupId,
+        d.url,
+        d.env || null
+      );
+    }
+  }
+}
+
+function listNamespaceGroups(): NamespaceGroupInput[] {
+  const db = getDb();
+  const groups = db
+    .prepare(
+      `SELECT ng.id, ng.provider, ng.name, ng.namespace, ng.project_id, ng.services_json, rc.name AS rancher_cluster_name
+       FROM namespace_groups ng LEFT JOIN rancher_clusters rc ON rc.id = ng.rancher_cluster_id`
+    )
+    .all() as {
+    id: number;
+    provider: string;
+    name: string;
+    namespace: string;
+    project_id: string | null;
+    services_json: string;
+    rancher_cluster_name: string | null;
+  }[];
+
+  return groups.map((g) => {
+    const domains = db
+      .prepare("SELECT url, env FROM namespace_group_domains WHERE group_id = ?")
+      .all(g.id) as { url: string; env: string | null }[];
+    return {
+      name: g.name,
+      provider: g.provider,
+      rancherCluster: g.rancher_cluster_name || undefined,
+      projectId: g.project_id || undefined,
+      namespace: g.namespace,
+      domains: domains.map((d) => ({ url: d.url, env: d.env || undefined })),
+      services: JSON.parse(g.services_json),
+    };
+  });
+}
+
 // applySettings({values}) gửi lên map {<tokenEnvVar hoặc connectionStringEnvVar đã derive>: <secret
 // thật>} — khớp NGƯỢC lại đúng cluster/db_environment nào bằng cách tự derive lại tên biến từ
 // name mỗi row (deriveTokenEnvVar/deriveConnStringEnvVar, CÙNG công thức envShim.ts dùng để
@@ -165,4 +269,10 @@ async function applySecretValues(values: Record<string, string>): Promise<void> 
   }
 }
 
-module.exports = { upsertRancherClusters, upsertDbEnvironments, applySecretValues };
+module.exports = {
+  upsertRancherClusters,
+  upsertDbEnvironments,
+  applySecretValues,
+  upsertNamespaceGroups,
+  listNamespaceGroups,
+};

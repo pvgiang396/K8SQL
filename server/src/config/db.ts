@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS namespace_groups (
   name TEXT NOT NULL UNIQUE,
   namespace TEXT NOT NULL,
   rancher_cluster_id INTEGER REFERENCES rancher_clusters(id),
+  project_id TEXT,
   kubeconfig_secret_ref TEXT,
   services_json TEXT NOT NULL,
   db_json TEXT,
@@ -89,6 +90,14 @@ function getDb(): InstanceType<typeof DatabaseSync> {
 
   const db = new DatabaseSync(dbPath);
   db.exec(SCHEMA_SQL);
+
+  // Migration idempotent cho DB tạo trước khi có cột project_id (2026-08-11) — CREATE TABLE IF NOT
+  // EXISTS ở trên không tự thêm cột mới vào bảng đã tồn tại, phải tự ALTER. SQLite không hỗ trợ
+  // "ADD COLUMN IF NOT EXISTS" nên phải tự kiểm tra qua PRAGMA table_info trước.
+  const namespaceGroupCols = db.prepare("PRAGMA table_info(namespace_groups)").all() as { name: string }[];
+  if (!namespaceGroupCols.some((c) => c.name === "project_id")) {
+    db.exec("ALTER TABLE namespace_groups ADD COLUMN project_id TEXT");
+  }
 
   const existing = db.prepare("SELECT value FROM app_settings WHERE key = 'schemaVersion'").get();
   if (!existing) {

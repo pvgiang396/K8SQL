@@ -167,6 +167,45 @@ k8sql/
     Tauri không relocate) — chỉ còn ghi `values` (secret) vào keychain theo đúng tên biến derive từ
     `rancher_clusters.name`/`db_environments.name` (`deriveTokenEnvVar`/`deriveConnStringEnvVar`,
     `envShim.ts`).
+  - **Nhóm namespace (`namespace_groups`) — ĐÃ FIX 2 lỗ hổng thật (2026-08-11, phát hiện khi AI dùng
+    `--deploy` lần đầu cho 1 domain mới):**
+    1. Bảng `namespace_groups` **thiếu cột `project_id`** (bắt buộc cho provider `rancher`,
+       `kube.service.js::createRancherContext()` throw `Missing projectId` nếu thiếu) — dù có ghi đủ
+       dữ liệu vào SQLite, `materializeLegacyConfig()` sinh ra `namespaces.json` vẫn KHÔNG dùng được.
+       Fix: thêm cột `project_id TEXT` vào `CREATE TABLE` + migration idempotent (`PRAGMA
+       table_info` kiểm tra trước, `ALTER TABLE ADD COLUMN` nếu thiếu, `server/src/config/db.ts`) cho
+       DB cũ đã tồn tại; `materializeLegacyConfig()` (`envShim.ts`) đưa `projectId` vào output.
+    2. **Chưa có route/UI nào ghi vào `namespace_groups`/`namespace_group_domains`** — chỉ có route
+       kế thừa `POST /provision/add-group` (từ k8sctl gốc) ghi THẲNG file `config/namespaces.json`,
+       hoàn toàn không qua SQLite → bị `materializeLegacyConfig()` ghi đè mất (về `[]`, vì bảng SQLite
+       rỗng) ngay lần khởi động lại HOẶC ngay lần lưu bất kỳ cấu hình Settings nào khác (cả
+       `saveRancherClusters`/`saveDbEnvironments`/`applySettings` đều tự gọi lại
+       `materializeLegacyConfig()` sau khi ghi — xem "Settings write-path — ĐÃ FIX" ở trên). Đã tự
+       verify bug này bằng thực nghiệm (thêm group qua `add-group`, restart app → mất; lưu lại
+       Rancher cluster không đổi gì → cũng mất ngay, không cần đợi restart).
+       Fix: thêm `settingsRepo.upsertNamespaceGroups()`/`listNamespaceGroups()` (cùng pattern
+       replace-all theo `name` như `upsertRancherClusters`) + `GET/POST /settings/namespace-groups`
+       (`settings.service.js`/`settings.controller.js`/`app.js`) ghi thật vào SQLite rồi
+       `materializeLegacyConfig()` ngay — cùng công thức 2 bảng kia. Route `add-group` cũ VẪN giữ
+       nguyên (tương thích API k8sctl gốc, dùng cho ai còn thao tác qua script cũ) nhưng AI/UI nên
+       dùng route mới để mapping sống sót qua restart/materialize.
+    3. **UI**: thêm section "Danh sách Nhóm Namespace (domain → deployment)" vào
+       `public/shared/settings-modal.html`/`.js`/`.css` — mỗi nhóm 1 card: Tên nhóm, Rancher Cluster
+       (`<select>` từ danh sách cluster ĐÃ lưu — không hỗ trợ cluster "isNew"/ad-hoc như bảng
+       Connection String, vì token ad-hoc chỉ sống trong phiên UI, không đáng để nhóm namespace phụ
+       thuộc), Project/Namespace (cascade qua `rancherProjects`/`rancherNamespaces`, tự viết
+       `buildGroupCascadeCell()` riêng thay vì tái dùng `buildCascadeCell()` — hàm gốc hardcode gọi
+       lại `renderDbEnvTable()` ở nhánh "chọn nhập tay", tái dùng trực tiếp sẽ vẽ nhầm bảng), Domain
+       (list `{url, env}` động, `env="prod"` để `--deploy`/`--configmap` tự báo Telegram), Service →
+       Deployment (list `{key, deployment}` động, `key` khớp tham số `<service>` của `node index.js
+       --deploy`, gợi ý tên deployment qua `<datalist>` nạp từ `rancherServices` sau khi chọn xong
+       Namespace — không ép chọn, vẫn gõ tay tự do). Chỉ hỗ trợ provider `rancher` qua UI (nhóm
+       provider `kubeconfig`, nếu có, vẫn phải quản lý qua gọi API `/settings/namespace-groups` trực
+       tiếp — chưa có ô upload file kubeconfig trong UI này).
+    Đã verify qua Playwright thật (không chỉ đọc code): mở Settings modal, card hiển thị đúng dữ liệu
+    đã migrate (`DVCCDDEMO_HUE` → `dvc-cd-hue`/`applications-vtu`/3 service `r3web`/`r3svc`/`r3auth`),
+    thêm/xoá 1 nhóm test qua UI hoạt động đúng không phá dữ liệu thật, restart app + lưu lại Rancher
+    cluster không đổi gì → mapping vẫn còn nguyên (2 kịch bản từng làm mất dữ liệu trước khi fix).
 - [ ] **Phase 4** — First-run wizard với progress bar % (`window.emit("wizard-progress", ...)`) —
   phần lớn hạ tầng (SQLite/keychain/import) đã có sẵn từ Phase 3, chỉ còn thiếu UI wizard bọc ngoài.
 - [ ] **Phase 5** — `tauri-plugin-dialog` thay hẳn `scripts/lib/browse-directory.js`/`config-info.js`

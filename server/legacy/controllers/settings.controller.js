@@ -43,6 +43,25 @@ async function listRancherClusters(_req, res, next) {
   }
 }
 
+async function listNamespaceGroups(_req, res, next) {
+  try {
+    const data = settingsService.listNamespaceGroups();
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function saveNamespaceGroups(req, res, next) {
+  try {
+    requireBodyFields(req.body, ["groups"]);
+    const data = await settingsService.saveNamespaceGroups(req.body.groups);
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function saveRancherClusters(req, res, next) {
   try {
     requireBodyFields(req.body, ["clusters"]);
@@ -223,5 +242,7 @@ module.exports = {
   saveDbEnvironments,
   revealDbEnvironmentValue,
   testDbConnection,
-  testDbConnectionAdhoc
+  testDbConnectionAdhoc,
+  listNamespaceGroups,
+  saveNamespaceGroups
 };

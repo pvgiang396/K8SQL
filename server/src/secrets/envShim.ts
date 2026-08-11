@@ -45,6 +45,7 @@ interface NamespaceGroupRow {
   name: string;
   namespace: string;
   rancher_cluster_id: number | null;
+  project_id: string | null;
   kubeconfig_secret_ref: string | null;
   services_json: string;
   db_json: string | null;
@@ -137,6 +138,7 @@ async function materializeLegacyConfig(baseDir: string): Promise<void> {
       name: g.name,
       provider: g.provider,
       rancherCluster: rancherCluster?.name || undefined,
+      projectId: g.project_id || undefined,
       configPath,
       namespace: g.namespace,
       domains: domains.map((d) => ({ url: d.url, env: d.env || undefined })),

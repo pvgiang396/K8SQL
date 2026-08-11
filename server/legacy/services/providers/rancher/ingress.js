@@ -127,10 +127,19 @@ async function annotateIngress(ctx, ingressName, annotations) {
   return { message: `Ingress annotations updated: ${ingressName}`, annotations: existing.annotations };
 }
 
+async function deleteIngress(ctx, ingressName) {
+  await rancherRequest(ctx, {
+    method: "DELETE",
+    path: `${projectPrefix(ctx)}/ingresses/${ctx.namespace}:${ingressName}`
+  });
+  return { message: `Ingress deleted: ${ingressName}` };
+}
+
 module.exports = {
   listIngresses,
   describeIngress,
   getIngressYaml,
   upsertIngress,
-  annotateIngress
+  annotateIngress,
+  deleteIngress
 };

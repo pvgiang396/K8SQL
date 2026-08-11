@@ -62,6 +62,7 @@ app.get("/ingresses/describe", ingressController.describeIngress);
 app.get("/ingresses/yaml", ingressController.getIngressYaml);
 app.post("/ingresses/apply", ingressController.upsertIngress);
 app.post("/ingresses/annotate", ingressController.annotateIngress);
+app.post("/ingresses/delete", ingressController.deleteIngress);
 
 app.get("/configmaps/read", configMapController.readConfigMap);
 app.get("/configmaps/yaml", configMapController.getConfigMapYaml);
@@ -107,7 +108,14 @@ app.get("/sql/columns", dbSchemaController.listColumns);
 app.get("/sql/autocomplete-schema", dbSchemaController.getAutocompleteSchema);
 app.post("/sql/query", dbQueryController.query);
 app.get("/sql/config/export", dbConfigController.exportConfig);
-app.post("/sql/config/import", dbConfigController.importConfig);
+// Body là file .sqlite nhị phân (srs/nangcapk8sql/v1.md #2) — express.json() global (dòng trên)
+// chỉ parse khi Content-Type: application/json nên không đụng route này; raw() riêng cho đúng
+// Content-Type octet-stream frontend gửi lên.
+app.post(
+  "/sql/config/import",
+  express.raw({ type: "application/octet-stream", limit: "20mb" }),
+  dbConfigController.importConfig
+);
 
 app.get("/settings/current", settingsController.getCurrentInstallInfo);
 app.post("/settings/apply", settingsController.applySettings);

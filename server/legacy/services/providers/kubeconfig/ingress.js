@@ -133,10 +133,20 @@ async function annotateIngress(ctx, ingressName, annotations) {
   }
 }
 
+async function deleteIngress(ctx, ingressName) {
+  try {
+    await ctx.networkingV1.deleteNamespacedIngress({ name: ingressName, namespace: ctx.namespace });
+    return { message: `Ingress deleted: ${ingressName}` };
+  } catch (error) {
+    throw new AppError(error.body?.message || `Failed to delete Ingress: ${ingressName}`, Number(error.statusCode) || 400);
+  }
+}
+
 module.exports = {
   listIngresses,
   describeIngress,
   getIngressYaml,
   upsertIngress,
-  annotateIngress
+  annotateIngress,
+  deleteIngress
 };

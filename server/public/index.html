@@ -63,7 +63,11 @@
     flex: 0 0 auto;
   }
   header .header-left {
-    width: 270px;
+    /* +5px = đúng width `.divider-v` (#dividerH, thanh chia dọc) — để border-right dưới đây thẳng
+       hàng với đường line do `.divider-v::after` tự vẽ (nằm ở MÉP PHẢI #dividerH, khớp điểm bắt đầu
+       của `.divider-h::after` bên #dividerV), không phải mép trái/giữa #dividerH. Xem chi tiết root
+       cause trong k8sql/CLAUDE.md Phase 9 mục 1 (bug thứ 4). */
+    width: calc(var(--aside-width, 270px) + 5px);
     flex: 0 0 auto;
     display: flex;
     align-items: center;
@@ -121,7 +125,6 @@
   aside {
     width: var(--aside-width, 270px);
     flex: 0 0 auto;
-    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
     background: var(--bg-alt);
@@ -129,13 +132,32 @@
   /* Thanh chia kéo-resize giữa aside/query-panel (chiều ngang, con trỏ col-resize) và giữa
      #editor/#resultsWrap (chiều dọc, con trỏ row-resize) — xem setupDivider() ở <script> bên dưới.
      Kéo ghi trực tiếp vào biến CSS --aside-width/--editor-height trên :root nên áp dụng đồng nhất
-     cho mọi tab (không phải per-tab state). */
-  .divider-v { flex: 0 0 auto; width: 5px; cursor: col-resize; background: transparent; }
-  .divider-v:hover, .divider-v.dragging { background: var(--accent); opacity: .4; }
+     cho mọi tab (không phải per-tab state).
+     Đường line hiển thị (::after, 1px) do CHÍNH divider tự vẽ — bug thật đã gặp (2026-08-10): dựa
+     vào border của element LÂN CẬN (aside/`#editor` border-right/border-bottom) để tạo đường line
+     tĩnh khiến trên WebKitGTK (app thật, khác Chromium lúc test bằng Playwright) render hở/lệch
+     ngay chỗ 2 divider giao nhau — tự vẽ line bằng chính divider loại bỏ hẳn phụ thuộc render giữa
+     2 element khác nhau. */
+  .divider-v, .divider-h { position: relative; }
+  /* background var(--bg-alt) (KHÔNG phải transparent) — #dividerH nằm giữa aside (nền --bg-alt) và
+     query-panel (nền --bg trắng); để transparent lộ ra khoảng trắng 5px không khớp màu 2 bên, xem
+     bug thật đã gặp trong k8sql/CLAUDE.md Phase 9 mục 1 (bug thứ 5). */
+  .divider-v { flex: 0 0 auto; width: 5px; cursor: col-resize; background: var(--bg-alt); }
+  /* right:0 (KHÔNG phải left/center) — phải khớp CHÍNH XÁC mép phải #dividerH, đúng vị trí
+     query-panel/#dividerV bắt đầu (`.divider-h::after` bên dưới dùng left:0 trong #dividerV) để 2
+     đường line chạm nhau tại điểm giao; cũng khớp `header .header-left`'s border-right (đã +5px ở
+     trên) — cả 3 điểm neo cùng 1 toạ độ x duy nhất. */
+  .divider-v::after { content: ""; position: absolute; top: 0; bottom: 0; right: 0; width: 1px; background: var(--border); }
+  .divider-v:hover::after, .divider-v.dragging::after { background: var(--accent); }
   .divider-h { flex: 0 0 auto; height: 5px; cursor: row-resize; background: transparent; }
-  .divider-h:hover, .divider-h.dragging { background: var(--accent); opacity: .4; }
+  .divider-h::after { content: ""; position: absolute; left: 0; right: 0; top: 2px; height: 1px; background: var(--border); }
+  .divider-h:hover::after, .divider-h.dragging::after { background: var(--accent); }
   aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin: 0; padding: 8px 10px 4px; }
-  aside .filter-row { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  /* border-bottom thường sẽ dừng đúng mép phải aside (x = --aside-width), hụt 5px so với đường dọc
+     .divider-v::after thật (x = --aside-width + 5px, vẽ ở mép phải #dividerH nằm SAU aside) — cùng
+     bản chất bug đã fix ở header .header-left phía trên, dùng ::after riêng để kéo dài thêm 5px. */
+  aside .filter-row { padding: 6px 8px; position: relative; }
+  aside .filter-row::after { content: ""; position: absolute; left: 0; right: -5px; bottom: 0; height: 1px; background: var(--border); }
   aside input[type="text"] {
     width: 100%;
     padding: 6px 8px;
@@ -207,7 +229,11 @@
   /* Thanh tab query — mỗi tab 1 EditorView + 1 result pane riêng (xem <script>, createTab()). Nút
      "+" cuối danh sách tab mở dropdown 2 mục Query SQL/Query NoSQL, cùng convention .sm-icon-plus
      của settings-modal (ký tự "+" trực tiếp, không tạo asset PNG mới). */
-  #tabBar { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); background: var(--bg-alt); flex: 0 0 auto; }
+  /* border-bottom cũ đã bỏ (2026-08-10) — trùng lặp với `header`'s border-bottom (đã tách riêng
+     cách nhau ~1px, trên WebKitGTK render thành "đường đúp" ngay dưới thanh công cụ khi tabBar rỗng
+     — xem ghi chú ở .divider-v/.divider-h phía trên). Phân tách tabBar/editor vẫn rõ nhờ màu nền
+     --bg-alt khác --bg, không cần thêm border riêng. */
+  #tabBar { display: flex; align-items: stretch; background: var(--bg-alt); flex: 0 0 auto; }
   #tabList { display: flex; flex: 1 1 auto; min-width: 0; overflow-x: auto; }
   .tab-item {
     display: flex; align-items: center; gap: 6px; padding: 0 8px 0 10px;
@@ -242,7 +268,7 @@
 
   #editor {
     flex: 0 0 auto; height: var(--editor-height, 320px); min-height: 120px; max-height: 70vh;
-    overflow: hidden; border-bottom: 1px solid var(--border); display: flex; flex-direction: column;
+    overflow: hidden; display: flex; flex-direction: column;
   }
   .editor-pane { flex: 1 1 auto; min-height: 0; overflow: auto; }
   .editor-pane[hidden] { display: none; }
@@ -391,7 +417,7 @@
         <span class="divider"></span>
         <button id="btnImport" class="icon-btn" title="Import cấu hình kết nối"><img src="/assets/import.png" alt="" /></button>
         <button id="btnExport" class="icon-btn" title="Export cấu hình kết nối"><img src="/assets/export.png" alt="" /></button>
-        <input type="file" id="importFileInput" accept="application/json" hidden />
+        <input type="file" id="importFileInput" accept=".sqlite,application/octet-stream" hidden />
         <span class="divider"></span>
         <div class="tab-new-wrap">
           <button type="button" id="btnNewTab" class="icon-btn" title="Tab mới"><img src="/assets/plus.png" alt="" /></button>
@@ -1500,25 +1526,26 @@
     // cho người khác. Xem k8sctl/CLAUDE.md mục "SQL Tool".
     async function exportConfigFile() {
       try {
-        const data = await fetchJson("/sql/config/export");
-        const jsonText = JSON.stringify(data, null, 2);
+        const response = await fetch("/sql/config/export");
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const bytes = await response.arrayBuffer();
         if (window.showSaveFilePicker) {
           const handle = await window.showSaveFilePicker({
-            suggestedName: "k8sctl-sql-config.json",
-            types: [{ description: "JSON", accept: { "application/json": [".json"] } }]
+            suggestedName: "k8sql-config.sqlite",
+            types: [{ description: "SQLite", accept: { "application/octet-stream": [".sqlite"] } }]
           });
           const writable = await handle.createWritable();
-          await writable.write(jsonText);
+          await writable.write(bytes);
           await writable.close();
           toolbarStatus.textContent = "Đã export cấu hình.";
         } else {
           // Fallback khi trình duyệt không hỗ trợ File System Access API (vd Firefox) — tải thẳng
           // về Downloads, không có popup chọn vị trí lưu thật như showSaveFilePicker.
-          const blob = new Blob([jsonText], { type: "application/json" });
+          const blob = new Blob([bytes], { type: "application/octet-stream" });
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
-          a.download = "k8sctl-sql-config.json";
+          a.download = "k8sql-config.sqlite";
           a.click();
           URL.revokeObjectURL(url);
           toolbarStatus.textContent = "Đã tải file cấu hình về Downloads (trình duyệt không hỗ trợ chọn vị trí lưu).";
@@ -1530,13 +1557,16 @@
       }
     }
 
-    async function applyImportedConfig(text) {
-      const parsed = JSON.parse(text);
-      await fetchJson("/sql/config/import", {
+    async function applyImportedConfig(bytes) {
+      const response = await fetch("/sql/config/import", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(parsed)
+        headers: { "Content-Type": "application/octet-stream" },
+        body: bytes
       });
+      const body = await response.json().catch(() => null);
+      if (!response.ok || !body?.success) {
+        throw new Error(body?.message || `HTTP ${response.status}`);
+      }
       // Cấu hình vừa import có thể ghi đè environment trùng tên (đổi connection string) — cache cây
       // cũ không còn đáng tin, xoá hết để lần expand kế tiếp tải lại dữ liệu mới.
       schemaCache.clear();
@@ -1548,15 +1578,15 @@
 
     async function importConfigFile() {
       try {
-        let text;
+        let bytes;
         if (window.showOpenFilePicker) {
           const [handle] = await window.showOpenFilePicker({
-            types: [{ description: "JSON", accept: { "application/json": [".json"] } }]
+            types: [{ description: "SQLite", accept: { "application/octet-stream": [".sqlite"] } }]
           });
           const file = await handle.getFile();
-          text = await file.text();
+          bytes = await file.arrayBuffer();
         } else {
-          text = await new Promise((resolve, reject) => {
+          bytes = await new Promise((resolve, reject) => {
             importFileInput.value = "";
             importFileInput.onchange = () => {
               const file = importFileInput.files[0];
@@ -1564,12 +1594,12 @@
                 reject(new Error("Chưa chọn file."));
                 return;
               }
-              file.text().then(resolve, reject);
+              file.arrayBuffer().then(resolve, reject);
             };
             importFileInput.click();
           });
         }
-        await applyImportedConfig(text);
+        await applyImportedConfig(bytes);
       } catch (error) {
         if (error.name !== "AbortError") {
           toolbarStatus.textContent = `Lỗi import: ${error.message}`;
@@ -1677,6 +1707,7 @@
       let dragging = false;
       let startPos = 0;
       let startSize = 0;
+      let currentMax = 0;
 
       dividerEl.addEventListener("mousedown", (event) => {
         dragging = true;
@@ -1685,6 +1716,11 @@
         startPos = axis === "x" ? event.clientX : event.clientY;
         const rect = targetEl.getBoundingClientRect();
         startSize = axis === "x" ? rect.width : rect.height;
+        // max tính lại MỖI LẦN bắt đầu kéo (không tính 1 lần lúc load trang) — bug thật đã gặp: nếu
+        // `max` là số cố định tính từ window.innerHeight lúc script chạy, resize/maximize cửa sổ SAU
+        // đó không cập nhật lại, khiến kéo divider bị kẹt ở giới hạn cũ (nhỏ hơn cửa sổ thật rất
+        // nhiều) dù CSS `max-height: 70vh` của #editor đã responsive đúng.
+        currentMax = typeof max === "function" ? max() : max;
         event.preventDefault();
       });
 
@@ -1692,7 +1728,7 @@
         if (!dragging) return;
         const pos = axis === "x" ? event.clientX : event.clientY;
         const delta = pos - startPos;
-        const newSize = Math.min(max, Math.max(min, startSize + delta));
+        const newSize = Math.min(currentMax, Math.max(min, startSize + delta));
         document.documentElement.style.setProperty(cssVar, `${newSize}px`);
       });
 
@@ -1708,7 +1744,7 @@
       cssVar: "--aside-width", min: 160, max: 600, axis: "x", targetEl: document.querySelector("aside")
     });
     setupDivider(dividerV, {
-      cssVar: "--editor-height", min: 120, max: Math.round(window.innerHeight * 0.7), axis: "y", targetEl: editorContainerEl
+      cssVar: "--editor-height", min: 120, max: () => Math.round(window.innerHeight * 0.7), axis: "y", targetEl: editorContainerEl
     });
 
     // KHÔNG tự mở sẵn 1 tab lúc load (yêu cầu SRS — mặc định "SQL" sai lệch khi hệ thống dùng

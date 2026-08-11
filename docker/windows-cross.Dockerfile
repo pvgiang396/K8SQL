@@ -10,7 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nsis \
     curl \
     ca-certificates \
+    libayatana-appindicator3-dev \
     && rm -rf /var/lib/apt/lists/*
+# libayatana-appindicator3-dev: bug thật đã gặp — `cargo tauri build` (Phase 8 tray-icon) tự kiểm
+# tra thư viện appindicator trên HOST build (container Linux này) dù target là Windows (không dùng
+# GTK tray) — thiếu package này (chỉ có .pc file, không chỉ .so runtime) khiến build panic
+# "Can't detect any appindicator library" ngay cả khi cross-build cho Windows.
 
 RUN rustup target add x86_64-pc-windows-gnu
 

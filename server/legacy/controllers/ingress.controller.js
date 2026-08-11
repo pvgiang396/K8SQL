@@ -76,10 +76,21 @@ async function annotateIngress(req, res, next) {
   }
 }
 
+async function deleteIngress(req, res, next) {
+  try {
+    requireBodyFields(req.body, ["domain", "ingress"]);
+    const data = await ingressService.deleteIngress(req.body.domain, req.body.ingress);
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   listIngresses,
   describeIngress,
   getIngressYaml,
   upsertIngress,
-  annotateIngress
+  annotateIngress,
+  deleteIngress
 };

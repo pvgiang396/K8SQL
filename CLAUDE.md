@@ -38,6 +38,17 @@ thật. **k8sctl tiếp tục chạy song song, không bị đụng tới** tron
    cần đổi `K8SCTL_URL` → `K8SQL_URL` là chạy được. Route MỚI đã thêm (không có ở k8sctl gốc):
    `POST /internal/shutdown` (graceful shutdown), `POST /internal/import-k8sctl-config` (import 1
    lần từ export cũ), `GET/POST /native/autostart` (proxy sang `native_bridge.rs`).
+   `POST /ingresses/delete {domain, ingress}` (2026-08-10, xem `r3workspace/docs/team-notes.md`
+   #91) — thêm ở CẢ 2 provider (`services/providers/{rancher,kubeconfig}/ingress.js`), đúng pattern
+   `deleteDeployment`/`deleteService`/`deleteConfigMap` đã có sẵn (những hàm này port từ k8sctl,
+   nhưng `deleteIngress` thì CHƯA có ở k8sctl gốc tại thời điểm thêm — nên tạm liệt vào nhóm "route
+   mới" ở đây, cần backport ngược lại k8sctl khi có dịp). **Lưu ý quan trọng khi dùng trên bản đã
+   đóng gói (`.deb`/binary SEA đang chạy)**: sửa `server/legacy/**/*.js` trong source KHÔNG có tác
+   dụng ngay với app đang chạy — sidecar chạy từ `/usr/bin/k8sql-server` (binary đã bundle), không
+   đọc trực tiếp từ thư mục source này. Cần rebuild (`npm run build:sea` + đóng gói lại Tauri) rồi
+   cài lại mới nhận code mới; nếu chỉ cần xoá 1 Ingress gấp mà chưa kịp rebuild, gọi thẳng Rancher
+   Norman API (`DELETE {rancherUrl}/v3/project/{clusterId}:{projectId}/ingresses/{namespace}:{name}`
+   kèm `Authorization: Bearer <token>`) như đã làm ở #91.
 
 ## Cấu trúc repo
 
@@ -232,8 +243,7 @@ k8sql/
     nhận bằng `file` (`PE32 executable ... Nullsoft Installer self-extracting archive`) + ownership
     đúng user thường (không phải root). Rủi ro WebView2/COM binding lo trước đó **KHÔNG xảy ra** —
     `webview2-com` compile sạch qua GNU target. Vẫn giữ nguyên cảnh báo **KHÔNG CHÍNH THỨC** (Tauri
-    khuyến nghị build native Windows thật/CI runner Windows dùng MSVC, không phải GNU) vì chưa verify
-    được app Windows thật sự MỞ ĐÚNG trên máy Windows thật (máy dev không có Windows để tự chạy thử).
+    khuyến nghị build native Windows thật/CI runner Windows dùng MSVC, không phải GNU).
     2 bug thật đã gặp + fix khi làm bước này (đã sửa vào code, không chỉ note lại):
     1. Docker named volume (`k8sql-windows-cross-target`) dùng cache `target/` KHÔNG đọc trực tiếp
        được từ host — script cũ tìm sai chỗ dù build container đã "Finished 1 bundle" thành công. Fix:
@@ -245,6 +255,24 @@ k8sql/
        sau khi đổi `--user` luôn lỗi `Permission denied`. Fix: `buildWindowsRustViaDocker()` tự chạy 1
        container tạm (`alpine chown -R uid:gid`) trên cả 2 volume cache TRƯỚC mỗi lần build (idempotent,
        không hại gì nếu ownership đã đúng) — không bắt user tự chạy lệnh chown thủ công nữa.
+    3. **Bug thật đã gặp + fix (2026-08-10)**: `docker/windows-cross.Dockerfile` thiếu
+       `libayatana-appindicator3-dev` → `cargo tauri build` (dù target Windows) panic
+       `Can't detect any appindicator library` ngay ở bước bundler — tauri-cli tự kiểm tra thư viện
+       tray-icon trên HOST build (container Linux) bất kể target OS. Cùng bug/fix áp dụng cho build
+       `.deb` Linux native (`node scripts/build-cross-platform.mjs --targets linux`) trên máy dev
+       thật — thiếu gói `libayatana-appindicator3-dev` (chỉ có `.so` runtime, thiếu `.pc` cho
+       pkg-config) gây lỗi tương tự. Fix: thêm dòng cài gói vào cả Dockerfile lẫn cài trực tiếp trên
+       máy dev qua `apt-get install -y libayatana-appindicator3-dev`.
+  - **ĐÃ VERIFY THẬT trên Windows 11 thật (2026-08-10, qua VM `win11-2` GNOME Boxes/libvirt)** — cài
+    `.exe` NSIS thành công ("Installation Complete — Setup was completed successfully"), app mở
+    đúng UI (Object Explorer, tiếng Việt hiển thị đúng). **Kết luận về dialog "Open File - Security
+    Warning"/SmartScreen mà user report ban đầu (srs/nangcapk8sql/v1.md #4): ĐÂY LÀ HÀNH VI MẶC ĐỊNH
+    của Windows cho MỌI file .exe tải qua trình duyệt chưa ký số** (gắn Zone.Identifier/"Mark of the
+    Web") — không phải bug của installer. Xác nhận chéo: file tải qua `Invoke-WebRequest` (PowerShell,
+    không gắn MOTW) chạy thẳng KHÔNG hiện cảnh báo nào, cùng 1 file `.exe`. Không mua/tự tạo
+    code-signing cert (ngoài phạm vi, tốn phí) — chỉ cần hướng dẫn user "More info → Run anyway" nếu
+    Windows hiện SmartScreen đầy đủ (máy test dùng dialog "Security Warning" đơn giản hơn, tuỳ
+    Windows Defender config/policy từng máy).
   - **macOS**: **KHÔNG có cách nào cross-build qua Docker** — Apple cấm chạy Xcode/SDK macOS trên
     phần cứng không phải Apple (giới hạn pháp lý+kỹ thuật của Apple, không phải thiếu cấu hình).
     `scripts/build-cross-platform.mjs` cố ý KHÔNG đưa `darwin` vào target mặc định khi chạy trên
@@ -287,6 +315,105 @@ k8sql/
     protocol tray riêng từng OS/DE, máy dev không có Mac/Windows thật. Icon tray dùng icon màu có
     sẵn, macOS quy ước cần icon "template" đơn sắc cho menu bar — chưa làm riêng.
   - **Lưu ý hành vi mới cho AI**: xem mục "AI dùng k8sql" bên dưới — không còn nhờ user mở app tay.
+- [x] **Phase 9 (2026-08-10) — 3 fix từ `srs/nangcapk8sql/v1.md`, đã verify qua app cài thật (Linux
+  `.deb` + Windows `.exe`)**:
+  1. **Lệch đường phân cách**: `header .header-left` (`server/public/index.html`) trước đây hardcode
+     `width: 270px`, không đồng bộ với `aside` (dùng `var(--aside-width, 270px)`, bị ghi đè khi kéo
+     `#dividerH`) → viền phải header và viền phải aside lệch nhau sau khi resize. Fix: đổi
+     `header-left` dùng chung `var(--aside-width, 270px)`.
+     - **Bug thứ 2 phát hiện thêm ngay sau đó (cùng khu vực resize, user báo tiếp)**: kéo `#dividerV`
+       (chia `#editor`/`#resultsWrap`) xuống bị "kẹt" ở chiều cao rất nhỏ, không kéo to ra được nữa.
+       Root cause: `setupDivider(dividerV, {..., max: Math.round(window.innerHeight * 0.7)})` —
+       `max` tính **1 LẦN DUY NHẤT lúc script load trang**, không cập nhật lại khi cửa sổ
+       resize/maximize sau đó → nếu cửa sổ lúc load nhỏ hơn lúc user thao tác thực tế, giá trị `max`
+       cũ (nhỏ) kẹp cứng mọi lần kéo sau, dù CSS `#editor { max-height: 70vh }` đã tự responsive
+       đúng. Đã tự verify bằng Playwright (`mcp__playwright__browser_run_code_unsafe` giả lập kéo
+       chuột): resize viewport 513→800px cao rồi kéo divider xuống 300px chỉ tăng được tới đúng
+       359px (= round(513*0.7), giá trị `max` cũ) thay vì phải lên tới ~560px. Fix:
+       `setupDivider()` nhận `max` là function, gọi lại **mỗi lần bắt đầu kéo** (`mousedown`) thay vì
+       tính 1 lần — `setupDivider(dividerV, {..., max: () => Math.round(window.innerHeight * 0.7)})`.
+       Verify lại bằng đúng kịch bản Playwright trên: sau fix, kéo tới đúng 560px (= round(800*0.7)).
+     - **Bug thứ 3 phát hiện thêm (2026-08-10, user gửi ảnh `srs/nangcapk8sql/LoiDuongLine2.png`) —
+       QUAN TRỌNG: KHÔNG tái hiện được bằng Playwright/Chromium, chỉ thấy khi chụp đúng app thật
+       (WebKitGTK)**: (a) đường ngang `#dividerV` không chạm đường dọc `#dividerH` — hở 1 khoảng nhỏ
+       ngay chỗ giao nhau; (b) đường ngang ngay dưới thanh công cụ (giữa `header` và `#tabBar`) bị
+       "đúp" — 2 đường sát nhau thay vì 1. Root cause CHUNG: cả 2 đường phân cách "tĩnh" (không phải
+       thanh kéo-resize) trước đây được vẽ bằng `border-right`/`border-bottom` của element LÂN CẬN
+       (`aside{border-right}`, `#editor{border-bottom}`, `#tabBar{border-bottom}` cạnh
+       `header{border-bottom}`) thay vì tự thanh divider vẽ — trên WebKitGTK (app thật) các border
+       này không luôn render khớp pixel 1:1 ở ranh giới giữa 2 element khác nhau (khác Chromium lúc
+       test bằng Playwright, nơi luôn khớp) → hở/đúp tuỳ layout cụ thể. **Bài học: bug loại này BẮT
+       BUỘC verify bằng screenshot đúng app thật đã cài (`.deb`/`.exe`), Playwright/trình duyệt
+       thường KHÔNG đủ để phát hiện hay xác nhận đã fix** — xem thêm mục cách chụp app thật ở dưới.
+       Fix: xoá hẳn `aside{border-right}`, `#editor{border-bottom}`, `#tabBar{border-bottom}` — để
+       CHÍNH `.divider-h`/`.divider-v` tự vẽ đường line tĩnh của mình qua `::after` (1px, màu
+       `var(--border)`) thay vì dựa vào border của 2 element khác nhau ghép lại. `#tabBar`/editor vẫn
+       phân biệt được với `header`/nhau nhờ khác màu nền (`--bg-alt` vs `--bg`), không cần border
+       riêng.
+     - **Bug thứ 4 — chính lần sửa bug thứ 3 lại gây lệch MỚI (user báo tiếp qua ảnh chụp)**: đặt
+       `::after` của `.divider-v` (đường dọc, #dividerH) ở `left:2px` (gần giữa vùng kéo 5px) — sai vì
+       KHÔNG khớp với 2 mốc toạ độ khác vẫn cố định: `header .header-left`'s `border-right` (nằm ở
+       MÉP TRÁI #dividerH, x = --aside-width) và điểm bắt đầu đường ngang `.divider-h::after` của
+       #dividerV (nằm ở MÉP PHẢI #dividerH, x = --aside-width + 5px, vì #dividerV nested trong
+       query-panel bắt đầu ngay sau #dividerH). 3 điểm neo này vốn không cùng 1 toạ độ x, đặt line ở
+       giữa (left:2px) làm nó KHÔNG khớp với CẢ HAI. Fix đúng: (a) đổi `.divider-v::after` sang
+       `right:0` (khớp mép phải #dividerH = điểm bắt đầu #dividerV), (b) đổi
+       `header .header-left { width: calc(var(--aside-width, 270px) + 5px) }` (cộng thêm đúng 5px =
+       width #dividerH, để border-right của nó dịch sang khớp CÙNG toạ độ x = --aside-width + 5px) —
+       cả 3 mốc giờ neo về đúng 1 toạ độ duy nhất. Verify bằng screenshot thật (crop+zoom pixel qua
+       `python3 -c "from PIL import Image; ..."`) tại cả 2 điểm giao (header/aside VÀ
+       #dividerH/#dividerV) — thẳng hàng hoàn toàn.
+     - **Bug thứ 5 — phát hiện ngay sau đó (user báo tiếp)**: vùng `#dividerH` (5px) có nền
+       `transparent` mặc định → lộ nền trắng (`--bg`) của `main`/trang thay vì xám như `aside` liền
+       kề, dù đường line (::after) vẫn đúng vị trí. Fix: đổi `.divider-v { background: transparent }`
+       → `background: var(--bg-alt)` (khớp màu nền `aside`) — chỉ `.divider-v` (dọc, giữa aside/query-
+       panel, 2 màu nền khác nhau) cần fix này; `.divider-h` (ngang, giữa editor/resultsWrap, cùng nền
+       trắng) không bị ảnh hưởng nên giữ nguyên `transparent`. Verify bằng lấy mẫu màu pixel
+       (`im.getpixel((x,y))`) xác nhận vùng #dividerH cùng RGB `(245,246,248)` với aside, không còn
+       dải trắng xen giữa.
+     - **Sự cố thao tác gặp phải khi verify các bug trên (ghi lại để tránh lặp)**: sau khi
+       `pkill -9` xong rồi launch lại NGAY LẬP TỨC bằng `DISPLAY=:0 nohup k8sql &`, có 1 lần cửa sổ
+       mở lên nhưng sidecar KHÔNG bind port 4210 (curl connection refused, `ps aux` không thấy tiến
+       trình `k8sql-server`) dù cửa sổ vẫn hiện UI (WebView giữ DOM cũ trong bộ nhớ từ phiên trước,
+       trông như bình thường nhưng KHÔNG phải code mới) — nghi do single-instance/port chưa kịp giải
+       phóng ngay sau kill -9 hàng loạt. Fix tạm: kill lại toàn bộ 1 lần nữa, đợi vài giây rồi mới
+       launch — luôn xác nhận CẢ 2 điều kiện trước khi tin tưởng screenshot: (1) `curl
+       127.0.0.1:4210/health` trả `200`, (2) `readlink -f /proc/<pid của k8sql-server>/exe` KHÔNG có
+       hậu tố `(deleted)`.
+  2. **Import/Export cấu hình đổi JSON → sqlite**: thêm
+     `server/legacy/services/sql-config-codec.js` (`encodeToSqliteBuffer`/`decodeFromSqliteBuffer`,
+     dùng `node:sqlite` — bảng `db_environments(name, data)`, cột `data` là JSON-encode nguyên vẹn
+     từng entry kể cả `connectionString` thật). `GET /sql/config/export` trả file `.sqlite` nhị phân
+     (`Content-Type: application/octet-stream`), `POST /sql/config/import` nhận qua
+     `express.raw({type: "application/octet-stream"})` (route-scoped, không đụng `express.json()`
+     global). Frontend đổi `fetchJson` → `fetch().arrayBuffer()`, file picker/input đổi sang
+     `.sqlite`. `importConfig()`/`db-environment.service.js` giữ nguyên 100% — chỉ đổi lớp
+     encode/decode ở biên. Đã verify round-trip qua `curl` + `node -e` (encode/decode) trên cả dev
+     server lẫn `.deb` đã cài.
+  3. **Cluster id lạ ("c-m-c4ghx99c") hiển thị thay tên cluster**: `rancher.client.js` hàm
+     `listClustersAdhoc()` — Norman API `/v3/clusters` trả `name` rỗng cho cluster
+     imported/provisioning, code cũ fallback thẳng `c.name || c.id` khiến combobox "Cluster ID"
+     (Settings modal) hiện ID kỹ thuật như tên. Fix: `c.name || c.nameDisplay || `(chưa đặt tên ·
+     ${c.id})`` — ưu tiên field hiển thị Norman chuẩn trước khi rơi về id có gắn nhãn rõ ràng. Chưa
+     verify được với Rancher thật (máy dev không có `rancher_clusters` cấu hình sẵn) — cần user tự
+     xác nhận combobox không còn hiện ID trần khi thêm lại cluster đang gặp lỗi.
+  - **Bug môi trường phát hiện thêm lúc build lại `.deb`/`.exe` để áp fix trên**: thiếu
+    `libayatana-appindicator3-dev` (Linux máy dev VÀ Docker image cross-build Windows) — xem chi
+    tiết + fix trong mục Windows ở Phase 6 phía trên.
+- [x] **3 fix UI nhỏ (2026-08-11), đã rebuild `.deb` + verify code chạy đúng qua process đang sống
+  (chưa tự chụp màn hình xác nhận pixel, xem ghi chú Phase 9 bug thứ 3 — nhờ user tự nhìn app thật)**:
+  1. Settings modal (`server/public/shared/settings-modal.js::renderDbEnvTable()`) — ẩn 4 field
+     Project/Namespace/DB Host-Port/Pod có sẵn khi Rancher của 1 Connection String card = "Không
+     dùng" (`env.rancherKey` falsy), qua `updateFieldVisibility()` toggle `style.display` trên các
+     `.sm-field` tương ứng.
+  2. `server/public/index.html` — đường ngang dưới ô tìm kiếm (`aside .filter-row`) đổi từ
+     `border-bottom` sang `::after` riêng kéo dài thêm 5px (`right: -5px`), cùng nguyên lý +5px đã
+     dùng cho `header .header-left` (Phase 9 bug thứ 4) — trước đó hở đúng 5px so với đường dọc
+     `.divider-v::after` (#dividerH).
+  3. `settings-modal.js::deleteClusterBtn` — cluster Rancher chưa gõ URL có `cluster.name` (Rancher
+     Key tự sinh từ URL) rỗng, khiến nút "Xóa ngay" trong `confirmDeleteWithKey` không cách nào gõ
+     khớp chuỗi rỗng để bật lên → không xoá được. Fix: bỏ qua bước gõ xác nhận Key khi
+     `!cluster.name`, xoá thẳng.
 
 ## AI dùng k8sql
 
@@ -297,6 +424,15 @@ Kiểm tra `curl -s -m 2 http://127.0.0.1:4210/health`. Nếu không phản hồ
 2. Đợi vài giây rồi `curl` lại `/health`.
 3. Chỉ nhắc user can thiệp tay nếu bước 1 cũng thất bại thật sự (vd không tìm thấy binary `k8sql`
    trong PATH, hoặc không có `/tmp/.X11-unix/X0`/phiên desktop nào đang mở — máy chưa đăng nhập).
+
+**Bug thật đã gặp — rebuild+reinstall `.deb` KHÔNG tự áp dụng cho tiến trình đang chạy** (2026-08-10,
+user report "vẫn còn lỗi" dù đã fix code + rebuild + `dpkg -i` xong): `dpkg -i` thay file
+`/usr/bin/k8sql-server` trên đĩa, nhưng tiến trình ĐANG CHẠY vẫn giữ inode binary CŨ trong bộ nhớ
+(`readlink /proc/<pid>/exe` báo `(deleted)`) — Linux không hot-swap executable của process đang sống.
+Gọi lại `k8sql --tray &` SAU KHI rebuild **không mở tiến trình mới** — bị `tauri-plugin-single-instance`
+(Phase 8) chặn, chỉ kích hoạt lại đúng tiến trình cũ (stale). **Bắt buộc `pkill -f k8sql-server` (hoặc
+tắt hẳn qua tray menu "Exit") TRƯỚC khi `dpkg -i`/relaunch** để tiến trình mới thật sự nạp binary mới —
+verify bằng `readlink -f /proc/<pid>/exe` phải trỏ đúng `/usr/bin/k8sql-server` (không có `(deleted)`).
 
 ## Bug thật nghiêm trọng đã gặp + fix: `keyring` crate thiếu feature → secret KHÔNG persist
 

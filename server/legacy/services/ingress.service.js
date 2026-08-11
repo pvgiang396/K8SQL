@@ -67,10 +67,23 @@ async function annotateIngress(domain, ingressName, annotations) {
   }
 }
 
+async function deleteIngress(domain, ingressName) {
+  const ctx = await createKubeContextByDomain(domain);
+  try {
+    const data = await implFor(ctx).deleteIngress(ctx, ingressName);
+    logOperation({ ...ctx, resource: "ingress", operation: "delete", success: true });
+    return data;
+  } catch (error) {
+    logOperation({ ...ctx, resource: "ingress", operation: "delete", success: false, error: error.message });
+    throw error;
+  }
+}
+
 module.exports = {
   listIngresses,
   describeIngress,
   getIngressYaml,
   upsertIngress,
-  annotateIngress
+  annotateIngress,
+  deleteIngress
 };

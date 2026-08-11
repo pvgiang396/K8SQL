@@ -123,7 +123,15 @@ async function listClustersAdhoc({ rancherUrl, token, insecureTLS }) {
     token
   };
   const res = await rancherRequest(ctx, { path: "/v3/clusters" });
-  return (res.data || []).map((c) => ({ id: c.id, name: c.name || c.id }));
+  // Cluster provisioning/imported (RKE2...) thường trả "name" rỗng ở Norman API — trước đây fallback
+  // thẳng về "c.id" (dạng "c-m-xxxxxxxx") khiến UI hiển thị 1 chuỗi ID kỹ thuật như thể là tên
+  // cluster hợp lệ (bug thật, xem srs/nangcapk8sql/v1.md #3). Ưu tiên "nameDisplay" (field hiển thị
+  // Norman API dùng chung cho nhiều resource khác), chỉ khi cả 2 đều rỗng mới rơi về id — nhưng gắn
+  // nhãn rõ ràng để không bị nhầm là tên thật.
+  return (res.data || []).map((c) => ({
+    id: c.id,
+    name: c.name || c.nameDisplay || `(chưa đặt tên · ${c.id})`
+  }));
 }
 
 // Dùng cho 3 hàm "browse" dưới đây — ctx CHƯA biết namespace/projectId (khác createRancherContext

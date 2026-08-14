@@ -116,6 +116,10 @@ app.post(
   express.raw({ type: "application/octet-stream", limit: "20mb" }),
   dbConfigController.importConfig
 );
+// Route MỚI (không có ở k8sctl gốc) — biến thể path-based cho WebView Tauri, xem comment
+// exportConfigToPath/importConfigFromPath trong db-config.controller.js.
+app.post("/sql/config/export-to-path", dbConfigController.exportConfigToPath);
+app.post("/sql/config/import-from-path", dbConfigController.importConfigFromPath);
 
 app.get("/settings/current", settingsController.getCurrentInstallInfo);
 app.post("/settings/apply", settingsController.applySettings);
@@ -126,6 +130,7 @@ app.post("/settings/rancher-clusters/reveal-token", settingsController.revealRan
 app.get("/settings/rancher-projects", settingsController.listRancherProjects);
 app.get("/settings/rancher-namespaces", settingsController.listRancherNamespaces);
 app.get("/settings/rancher-services", settingsController.listRancherServices);
+app.get("/settings/rancher-deployments", settingsController.listRancherDeployments);
 app.post("/settings/rancher-cluster-options", settingsController.listRancherClusterOptions);
 app.post("/settings/rancher-projects-adhoc", settingsController.listRancherProjectsAdhoc);
 app.post("/settings/rancher-namespaces-adhoc", settingsController.listRancherNamespacesAdhoc);

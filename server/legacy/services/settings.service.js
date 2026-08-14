@@ -261,6 +261,19 @@ async function listRancherServices(rancherKey, projectId, namespace, adhoc) {
   return rancherClient.listServices(rancherKey, projectId, namespace);
 }
 
+// Deployment thật (khác listRancherServices — Service) cho combobox "Deployment" ở Nhóm Namespace,
+// xem rancherClient.listDeployments(). Chỉ hỗ trợ rancherKey đã lưu (không có nhánh adhoc — Nhóm
+// Namespace không hỗ trợ cluster ad-hoc, xem k8sql/CLAUDE.md mục "UI" của Nhóm namespace).
+async function listRancherDeployments(rancherKey, projectId, namespace) {
+  if (!rancherKey) {
+    throw new AppError('Thiếu "rancherKey".', 400);
+  }
+  if (!projectId || !namespace) {
+    throw new AppError('Thiếu "projectId"/"namespace".', 400);
+  }
+  return rancherClient.listDeployments(rancherKey, projectId, namespace);
+}
+
 // Dò cluster ad-hoc bằng URL+token user vừa gõ (chưa lưu vào config/rancher-clusters.json) — dùng
 // để gợi ý clusterId lúc đang "Thêm mới" cluster trên settings-modal.js, khác 3 hàm "browse" ở trên
 // (đọc token đã lưu qua tokenEnvVar trong .env).
@@ -321,6 +334,7 @@ module.exports = {
   listRancherProjects,
   listRancherNamespaces,
   listRancherServices,
+  listRancherDeployments,
   listRancherClusterOptions,
   listDbEnvironments,
   saveDbEnvironments,

@@ -7,10 +7,113 @@
 // trông giống 1 password đã điền, thay vì câu giải thích dài dòng (chuyển câu đó sang title/tooltip).
 const MASKED_PLACEHOLDER = "●".repeat(16); // ●●●●●●●●●●●●●●●●
 
-// Sentinel value cho option "nhập tay" chèn cuối <select> ở buildCascadeCell() — cho phép override
-// thủ công ngay cả khi API đã trả về danh sách hợp lệ (vd resource có thật trên cluster nhưng chưa
-// gán vào Rancher Project đang chọn nên không lọt vào danh sách cascade của project đó).
-const MANUAL_OVERRIDE_SENTINEL = "__manual_override__";
+// Combobox gõ-để-lọc dùng chung cho MỌI danh sách chọn trong modal (srs/nangcapk8sql/v1.md #1 —
+// "tất cả combobox đều phải cho nhập từ khóa để tìm kiếm"). KHÔNG dùng <input list>+<datalist> —
+// đã thử, hoạt động đúng trên Chromium/Playwright nhưng KHÔNG mở popup gợi ý khi click trên
+// WebKitGTK thật (app Tauri đã cài, xem k8sql/CLAUDE.md — tiền lệ WebKitGTK lệch Chromium đã ghi ở
+// Phase 9 bug thứ 3, lần này lộ ra ở đúng field Project/Pod của 1 Connection String đã lưu, verify
+// qua ảnh chụp app thật, KHÔNG tái hiện được bằng Playwright). Thay bằng dropdown tự vẽ, JS tự kiểm
+// soát hiển thị/lọc/chọn — không phụ thuộc rendering <datalist> của từng engine.
+//
+// `allowFreeText` — field cho gõ tự do (vd tên Deployment chưa từng deploy, không có trong danh
+// sách gợi ý): không ép khớp đúng 1 mục trong `options`, `onChange` bắn theo mỗi lần gõ (không chỉ
+// lúc chọn 1 gợi ý), không revert khi rời focus mà gõ không khớp.
+function buildSearchableSelect({ options, value, onChange, disabled, placeholder, title, allowFreeText }) {
+  const wrap = document.createElement("div");
+  wrap.className = "sm-searchable-select";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.autocomplete = "off";
+  input.disabled = Boolean(disabled);
+  input.placeholder = placeholder || "-- gõ để tìm --";
+  if (title) input.title = title;
+  const current = options.find((o) => o.value === value);
+  input.value = current ? current.label : allowFreeText ? value || "" : "";
+
+  // Dropdown append vào document.body (portal, cùng kiểu .sm-confirm-overlay) thay vì làm con của
+  // `wrap` — mọi card trong modal nằm trong `.sm-section { overflow: hidden }` (cắt góc bo tròn của
+  // children), 1 dropdown position:absolute lồng bên trong sẽ bị cắt cụt ngay khi tràn quá khung
+  // card. position:fixed + toạ độ tính từ getBoundingClientRect() của input né hoàn toàn giới hạn
+  // overflow của mọi ancestor.
+  const dropdown = document.createElement("div");
+  dropdown.className = "sm-select-dropdown";
+  dropdown.hidden = true;
+
+  function positionDropdown() {
+    const rect = input.getBoundingClientRect();
+    dropdown.style.left = `${rect.left}px`;
+    dropdown.style.top = `${rect.bottom + 2}px`;
+    dropdown.style.width = `${rect.width}px`;
+  }
+
+  function openDropdown(query) {
+    dropdown.innerHTML = "";
+    const q = (query || "").trim().toLowerCase();
+    const filtered = q ? options.filter((o) => o.label.toLowerCase().includes(q)) : options;
+    if (!filtered.length) {
+      const empty = document.createElement("div");
+      empty.className = "sm-select-option sm-select-option-empty";
+      empty.textContent = "Không có mục khớp";
+      dropdown.appendChild(empty);
+    } else {
+      filtered.forEach((opt) => {
+        const item = document.createElement("div");
+        item.className = "sm-select-option";
+        item.textContent = opt.label;
+        // mousedown (không phải click) — chạy TRƯỚC "blur" của input, tránh phải delay setTimeout
+        // để chờ click đăng ký trước khi dropdown bị ẩn.
+        item.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          input.value = opt.label;
+          closeDropdown();
+          onChange(opt.value, opt);
+        });
+        dropdown.appendChild(item);
+      });
+    }
+    positionDropdown();
+    if (!dropdown.isConnected) document.body.appendChild(dropdown);
+    dropdown.hidden = false;
+  }
+
+  function closeDropdown() {
+    dropdown.hidden = true;
+    if (dropdown.isConnected) dropdown.remove();
+  }
+
+  input.addEventListener("focus", () => openDropdown(""));
+  input.addEventListener("input", () => {
+    openDropdown(input.value);
+    if (allowFreeText) onChange(input.value.trim(), null);
+  });
+  input.addEventListener("blur", () => {
+    closeDropdown();
+    if (allowFreeText) return;
+    if (!input.value) {
+      onChange("", null);
+      return;
+    }
+    const match = options.find((o) => o.label === input.value);
+    if (match) {
+      onChange(match.value, match);
+    } else {
+      // Gõ tự do không khớp mục nào trong danh sách — field này là ID/tên thật lấy từ API, không
+      // chấp nhận giá trị tự do (khác ô "nhập tay" riêng, luôn có sẵn cạnh combobox này).
+      input.value = current ? current.label : "";
+    }
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeDropdown();
+      input.value = current ? current.label : allowFreeText ? value || "" : "";
+      input.blur();
+    }
+  });
+
+  wrap.appendChild(input);
+  return wrap;
+}
 
 function slugEnvVar(name, suffix) {
   const base = String(name || "")
@@ -206,6 +309,60 @@ function confirmDeleteWithKey({ keyLabel, expectedKey, itemLabel }) {
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape") cleanup(false);
       if (event.key === "Enter" && !btnConfirm.disabled) cleanup(true);
+    });
+    btnCancel.addEventListener("click", () => cleanup(false));
+    btnConfirm.addEventListener("click", () => cleanup(true));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) cleanup(false);
+    });
+  });
+}
+
+// confirmSimple — biến thể đơn giản của confirmDeleteWithKey() (không bắt gõ lại key xác nhận),
+// dùng cho popup hỏi "Dùng pod X cho kết nối này?" sau khi dò pod tự động thành công (xem
+// autoDetectPod() trong renderDbEnvTable()). Cùng overlay/box CSS (.sm-confirm-*) để không cần
+// thêm style riêng.
+function confirmSimple({ title, message, confirmLabel, cancelLabel }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "sm-confirm-overlay";
+
+    const box = document.createElement("div");
+    box.className = "sm-confirm-box";
+
+    const titleEl = document.createElement("h4");
+    titleEl.textContent = title;
+    box.appendChild(titleEl);
+
+    const desc = document.createElement("p");
+    desc.textContent = message;
+    box.appendChild(desc);
+
+    const actions = document.createElement("div");
+    actions.className = "sm-confirm-actions";
+    const btnCancel = document.createElement("button");
+    btnCancel.type = "button";
+    btnCancel.className = "secondary";
+    btnCancel.textContent = cancelLabel || "Bỏ qua";
+    const btnConfirm = document.createElement("button");
+    btnConfirm.type = "button";
+    btnConfirm.className = "primary";
+    btnConfirm.textContent = confirmLabel || "Đồng ý";
+    actions.appendChild(btnCancel);
+    actions.appendChild(btnConfirm);
+    box.appendChild(actions);
+
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    btnConfirm.focus();
+
+    function cleanup(result) {
+      overlay.remove();
+      resolve(result);
+    }
+
+    overlay.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") cleanup(false);
     });
     btnCancel.addEventListener("click", () => cleanup(false));
     btnConfirm.addEventListener("click", () => cleanup(true));
@@ -837,9 +994,82 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     renderDbEnvTable();
   }
 
+  // Dò pod tự động (srs/nangcapk8sql/v1.md #1.6) — thử LẦN LƯỢT từng pod trong "Pod có sẵn"
+  // (env._pods) bằng endpoints.testDbConnectionAdhoc — endpoint này chấp nhận "existingPodName" độc
+  // lập với việc entry đã "Áp dụng" hay chưa (xem services/db.service.js::testConnectionAdhoc()),
+  // nên dùng được cho MỌI Connection String, không chỉ entry chưa lưu. KHÔNG ghi env.existingPodName
+  // cho tới khi user xác nhận qua confirmSimple() — chỉ đang dò thử, chưa chắc là lựa chọn cuối.
+  async function autoDetectPod(env) {
+    if (!env.urlValue) {
+      setStatus("Cần nhập Connection String trước khi kiểm tra pod.", "error");
+      return;
+    }
+    if (!env.rancherKey || !env.namespace || !env.projectId) {
+      setStatus("Cần chọn Rancher, Project và Namespace trước khi kiểm tra pod.", "error");
+      return;
+    }
+    if (!env._pods || env._pods === "loading") {
+      await fetchPodOptions(env);
+    }
+    const pods = Array.isArray(env._pods) ? env._pods : [];
+    if (!pods.length) {
+      setStatus(`Không có pod nào trong danh sách để dò cho "${env.name || "(chưa đặt tên)"}".`, "error");
+      return;
+    }
+    const target = resolveRancherTarget(env);
+    if (target && target.incomplete) {
+      setStatus('Rancher này chưa lưu — nhập đủ Rancher URL, Token và chọn Cluster ID trước.', "error");
+      return;
+    }
+    env._podAutoDetect = "loading";
+    renderDbEnvTable();
+    let found = null;
+    try {
+      for (const pod of pods) {
+        const body = await fetch(endpoints.testDbConnectionAdhoc, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            connectionString: env.urlValue,
+            namespace: env.namespace,
+            projectId: env.projectId,
+            dbHost: env.dbHost,
+            dbPort: env.dbPort,
+            existingPodName: pod.value,
+            ...(target || {})
+          })
+        }).then((r) => r.json());
+        if (body.success !== false && body.data && body.data.success) {
+          found = pod.value;
+          break;
+        }
+      }
+    } catch (error) {
+      env._podAutoDetect = null;
+      renderDbEnvTable();
+      setStatus(`Dò pod thất bại: ${error.message || "lỗi không xác định"}`, "error");
+      return;
+    }
+    env._podAutoDetect = null;
+    renderDbEnvTable();
+    if (!found) {
+      setStatus(`Không tìm thấy pod nào trong danh sách kết nối được cho "${env.name || "(chưa đặt tên)"}".`, "error");
+      return;
+    }
+    const confirmed = await confirmSimple({
+      title: "Dùng pod có sẵn?",
+      message: `Pod "${found}" kết nối được với "${env.name || "(chưa đặt tên)"}" — dùng pod này?`,
+      confirmLabel: "Dùng pod này"
+    });
+    if (confirmed) {
+      env.existingPodName = found;
+      renderDbEnvTable();
+    }
+  }
+
   // Không còn dùng <label> riêng (header cột bảng đã ghi rõ ý nghĩa) — dùng trực tiếp trong <td>
   // của hàng chính, thay cho hàng phụ (sm-expand-row) trước đây.
-  function buildCascadeCell({ options, currentValue, onSelect, manualField, manualPlaceholder, onManualInput, env, disabled }) {
+  function buildCascadeCell({ options, currentValue, onSelect, manualField, manualPlaceholder, onManualInput, showManualLink = true, env, disabled }) {
     const wrap = document.createElement("div");
     wrap.className = "sm-cascade-cell";
 
@@ -859,34 +1089,26 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         wrap.appendChild(hint);
       } else if (Array.isArray(options)) {
         if (options.length) {
-          const select = document.createElement("select");
-          select.disabled = Boolean(disabled);
-          const emptyOpt = document.createElement("option");
-          emptyOpt.value = "";
-          emptyOpt.textContent = "-- chọn --";
-          select.appendChild(emptyOpt);
-          options.forEach((opt) => {
-            const o = document.createElement("option");
-            o.value = opt.value;
-            o.textContent = opt.label;
-            if (opt.value === currentValue) o.selected = true;
-            select.appendChild(o);
-          });
-          if (manualField) {
-            const manualOpt = document.createElement("option");
-            manualOpt.value = MANUAL_OVERRIDE_SENTINEL;
-            manualOpt.textContent = "-- nhập tay (không có trong danh sách) --";
-            select.appendChild(manualOpt);
-          }
-          select.addEventListener("change", () => {
-            if (manualField && select.value === MANUAL_OVERRIDE_SENTINEL) {
+          wrap.appendChild(
+            buildSearchableSelect({
+              options,
+              value: currentValue,
+              disabled,
+              onChange: (value, opt) => onSelect(value, opt)
+            })
+          );
+          if (manualField && showManualLink) {
+            const manualLink = document.createElement("a");
+            manualLink.href = "#";
+            manualLink.className = "sm-cascade-manual-link";
+            manualLink.textContent = "✎ nhập tay (không có trong danh sách)";
+            manualLink.addEventListener("click", (e) => {
+              e.preventDefault();
               env[overrideKey] = true;
               renderDbEnvTable();
-              return;
-            }
-            onSelect(select.value, options.find((o) => o.value === select.value));
-          });
-          wrap.appendChild(select);
+            });
+            wrap.appendChild(manualLink);
+          }
         } else {
           const hint = document.createElement("div");
           hint.className = "sm-cascade-hint";
@@ -1016,35 +1238,31 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
 
       const locked = !env.isNew;
 
-      const rancherSelect = document.createElement("select");
-      rancherSelect.disabled = locked;
-      const emptyOption = document.createElement("option");
-      emptyOption.value = "";
-      emptyOption.textContent = "Không dùng";
-      rancherSelect.appendChild(emptyOption);
-      clusters.forEach((c) => {
-        const opt = document.createElement("option");
-        opt.value = c.name;
-        opt.textContent = c.name;
-        opt.title = c.rancherUrl || "";
-        if (env.rancherKey === c.name) opt.selected = true;
-        rancherSelect.appendChild(opt);
-      });
-      rancherSelect.addEventListener("change", () => {
-        env.rancherKey = rancherSelect.value || undefined;
-        env.mode = env.rancherKey ? "k8s-tunnel" : undefined;
-        env.projectId = "";
-        env.namespace = "";
-        env.dbHost = "";
-        env.dbPort = "";
-        env._projects = env._namespaces = null;
-        env._testStatus = null;
-        resetPodsCache(env);
-        recomputeDbEnvKey(env);
-        renderDbEnvTable();
-        if (env.rancherKey) fetchCascade(env, "projects");
-      });
-      rancherCell.appendChild(rancherSelect);
+      const rancherOptions = [
+        { value: "", label: "Không dùng" },
+        ...clusters.map((c) => ({ value: c.name, label: c.name }))
+      ];
+      rancherCell.appendChild(
+        buildSearchableSelect({
+          options: rancherOptions,
+          value: env.rancherKey || "",
+          disabled: locked,
+          onChange: (value) => {
+            env.rancherKey = value || undefined;
+            env.mode = env.rancherKey ? "k8s-tunnel" : undefined;
+            env.projectId = "";
+            env.namespace = "";
+            env.dbHost = "";
+            env.dbPort = "";
+            env._projects = env._namespaces = null;
+            env._testStatus = null;
+            resetPodsCache(env);
+            recomputeDbEnvKey(env);
+            renderDbEnvTable();
+            if (env.rancherKey) fetchCascade(env, "projects");
+          }
+        })
+      );
 
       // Entry cũ dùng cơ chế k8s-tunnel qua `domain` (khớp entry namespaces.json, xem "Config
       // files" trong CLAUDE.md) thay vì `rancherKey` trực tiếp — UI này chỉ hỗ trợ sửa nhánh
@@ -1068,13 +1286,6 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         buildCascadeCell({
           options: env.rancherKey ? env._projects : undefined,
           currentValue: env.projectId,
-          manualField: "projectId",
-          manualPlaceholder: "hoặc nhập tay Project ID",
-          onManualInput: () => {
-            env._testStatus = null;
-            resetPodsCache(env);
-            recomputeDbEnvKey(env);
-          },
           env,
           disabled: locked || !env.rancherKey,
           onSelect: (value) => {
@@ -1207,6 +1418,7 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
           currentValue: env.existingPodName,
           manualField: "existingPodName",
           manualPlaceholder: "hoặc nhập tay tên pod (để trống = jump pod mặc định)",
+          showManualLink: false,
           env,
           disabled: false,
           onSelect: (value) => {
@@ -1214,6 +1426,25 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
           }
         })
       );
+
+      // Link dò pod tự động luôn hiển thị trong mục Pod có sẵn. Khi chưa đủ dữ kiện, thao tác
+      // click sẽ báo rõ điều kiện còn thiếu thay vì làm mất link khỏi giao diện.
+      if (endpoints.testDbConnectionAdhoc) {
+        const autoDetectLink = document.createElement("a");
+        autoDetectLink.href = "#";
+        autoDetectLink.className = "sm-pod-autodetect-link";
+        const isDetecting = env._podAutoDetect === "loading";
+        autoDetectLink.textContent = isDetecting
+          ? "Đang dò pod khả dụng..."
+          : "Click vào đây để kiểm tra pod có sẵn khả dụng với kết nối này";
+        if (isDetecting) autoDetectLink.classList.add("disabled");
+        autoDetectLink.addEventListener("click", (e) => {
+          e.preventDefault();
+          if (isDetecting) return;
+          autoDetectPod(env);
+        });
+        existingPodCell.appendChild(autoDetectLink);
+      }
 
       // Checkbox "Cho phép ghi" đã ẩn khỏi UI theo yêu cầu — env.allowWrite vẫn giữ nguyên trong
       // state/payload (mặc định true lúc "Thêm mới", xem btnAddDbEnv bên dưới), chỉ không cho sửa
@@ -1328,31 +1559,23 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         wrap.appendChild(hint);
       } else if (Array.isArray(options)) {
         if (options.length) {
-          const select = document.createElement("select");
-          const emptyOpt = document.createElement("option");
-          emptyOpt.value = "";
-          emptyOpt.textContent = "-- chọn --";
-          select.appendChild(emptyOpt);
-          options.forEach((opt) => {
-            const o = document.createElement("option");
-            o.value = opt.value;
-            o.textContent = opt.label;
-            if (opt.value === currentValue) o.selected = true;
-            select.appendChild(o);
+          wrap.appendChild(
+            buildSearchableSelect({
+              options,
+              value: currentValue,
+              onChange: (value) => onSelect(value)
+            })
+          );
+          const manualLink = document.createElement("a");
+          manualLink.href = "#";
+          manualLink.className = "sm-cascade-manual-link";
+          manualLink.textContent = "✎ nhập tay (không có trong danh sách)";
+          manualLink.addEventListener("click", (e) => {
+            e.preventDefault();
+            group[overrideKey] = true;
+            renderGroupsTable();
           });
-          const manualOpt = document.createElement("option");
-          manualOpt.value = MANUAL_OVERRIDE_SENTINEL;
-          manualOpt.textContent = "-- nhập tay (không có trong danh sách) --";
-          select.appendChild(manualOpt);
-          select.addEventListener("change", () => {
-            if (select.value === MANUAL_OVERRIDE_SENTINEL) {
-              group[overrideKey] = true;
-              renderGroupsTable();
-              return;
-            }
-            onSelect(select.value);
-          });
-          wrap.appendChild(select);
+          wrap.appendChild(manualLink);
         } else {
           const hint = document.createElement("div");
           hint.className = "sm-cascade-hint";
@@ -1424,19 +1647,22 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     renderGroupsTable();
   }
 
-  // Gợi ý tên deployment (datalist, không ép buộc chọn) — tải 1 lần khi đã đủ rancherKey/projectId/
-  // namespace, cache vào group._serviceOptions.
-  async function fetchGroupServiceOptions(group) {
+  // Gợi ý tên Deployment THẬT (datalist, không ép buộc chọn — user vẫn gõ tay tự do vì Deployment
+  // có thể chưa deploy lần nào lúc đang cấu hình) — tải 1 lần khi đã đủ rancherKey/projectId/
+  // namespace, cache vào group._deploymentOptions. Trước đây gọi endpoints.rancherServices (K8s
+  // Service, bị gắn nhầm nhãn "deployment" — srs/nangcapk8sql/v1.md #1), nay dùng đúng
+  // endpoints.rancherDeployments (Norman API /workloads?type=deployment, xem rancherClient.listDeployments()).
+  async function fetchGroupDeploymentOptions(group) {
     if (!group.rancherKey || !group.projectId || !group.namespace) return;
-    group._serviceOptions = "loading";
+    group._deploymentOptions = "loading";
     renderGroupsTable();
     try {
-      const url = `${endpoints.rancherServices}?rancherKey=${encodeURIComponent(group.rancherKey)}&projectId=${encodeURIComponent(group.projectId)}&namespace=${encodeURIComponent(group.namespace)}`;
+      const url = `${endpoints.rancherDeployments}?rancherKey=${encodeURIComponent(group.rancherKey)}&projectId=${encodeURIComponent(group.projectId)}&namespace=${encodeURIComponent(group.namespace)}`;
       const body = await fetch(url).then((r) => r.json());
       if (body.success === false) throw new Error(body.message || "Không tải được danh sách.");
-      group._serviceOptions = (body.data || []).map((s) => s.name);
+      group._deploymentOptions = (body.data || []).map((d) => d.name);
     } catch (error) {
-      group._serviceOptions = [];
+      group._deploymentOptions = [];
     }
     renderGroupsTable();
   }
@@ -1454,7 +1680,7 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
           group.description = value;
         },
         placeholder: "Mô tả (tuỳ chọn)",
-        icon: "/assets/k8s.png",
+        icon: "/assets/domain-deployment.png",
         iconAlt: "Nhóm namespace",
         labelPrefix: "Nhóm"
       });
@@ -1475,34 +1701,28 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
 
       const clusterField = createField("Rancher Cluster");
       row.appendChild(clusterField.field);
-      const clusterSelect = document.createElement("select");
-      const emptyClusterOpt = document.createElement("option");
-      emptyClusterOpt.value = "";
-      emptyClusterOpt.textContent = "-- chọn --";
-      clusterSelect.appendChild(emptyClusterOpt);
-      state.rancherClusters
+      const clusterOptions = state.rancherClusters
         .filter((c) => c.name && !c.isNew)
-        .forEach((c) => {
-          const o = document.createElement("option");
-          o.value = c.name;
-          o.textContent = c.description ? `${c.name} (${c.description})` : c.name;
-          if (c.name === group.rancherKey) o.selected = true;
-          clusterSelect.appendChild(o);
-        });
-      clusterSelect.title = "Chỉ liệt kê Rancher cluster ĐÃ lưu (bấm \"Áp dụng\" ở bảng Rancher trước nếu vừa thêm mới).";
-      clusterSelect.addEventListener("change", () => {
-        group.rancherKey = clusterSelect.value;
-        group.projectId = "";
-        group.namespace = "";
-        group._projects = null;
-        group._namespaces = null;
-        group._serviceOptions = null;
-        group._manualOverride_projectId = false;
-        group._manualOverride_namespace = false;
-        if (group.rancherKey) fetchGroupCascade(group, "projects");
-        renderGroupsTable();
-      });
-      clusterField.value.appendChild(clusterSelect);
+        .map((c) => ({ value: c.name, label: c.description ? `${c.name} (${c.description})` : c.name }));
+      clusterField.value.appendChild(
+        buildSearchableSelect({
+          options: clusterOptions,
+          value: group.rancherKey || "",
+          title: 'Chỉ liệt kê Rancher cluster ĐÃ lưu (bấm "Áp dụng" ở bảng Rancher trước nếu vừa thêm mới).',
+          onChange: (value) => {
+            group.rancherKey = value;
+            group.projectId = "";
+            group.namespace = "";
+            group._projects = null;
+            group._namespaces = null;
+            group._deploymentOptions = null;
+            group._manualOverride_projectId = false;
+            group._manualOverride_namespace = false;
+            if (group.rancherKey) fetchGroupCascade(group, "projects");
+            renderGroupsTable();
+          }
+        })
+      );
 
       const projectField = createField("Project");
       row.appendChild(projectField.field);
@@ -1517,7 +1737,7 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
             group.projectId = value;
             group.namespace = "";
             group._namespaces = null;
-            group._serviceOptions = null;
+            group._deploymentOptions = null;
             group._manualOverride_namespace = false;
             if (value) fetchGroupCascade(group, "namespaces");
             renderGroupsTable();
@@ -1536,9 +1756,9 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
           group,
           onSelect: (value) => {
             group.namespace = value;
-            group._serviceOptions = null;
+            group._deploymentOptions = null;
             renderGroupsTable();
-            fetchGroupServiceOptions(group);
+            fetchGroupDeploymentOptions(group);
           }
         })
       );
@@ -1608,7 +1828,10 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       const servicesWrap = document.createElement("div");
       servicesWrap.className = "sm-subrow-list";
       if (!group.services || !group.services.length) group.services = [{ key: "", deployment: "" }];
-      const datalistId = `sm-deploy-suggest-${index}`;
+      const deploymentOptions = (Array.isArray(group._deploymentOptions) ? group._deploymentOptions : []).map((name) => ({
+        value: name,
+        label: name
+      }));
       group.services.forEach((s, sIndex) => {
         const subrow = document.createElement("div");
         subrow.className = "sm-subrow";
@@ -1620,17 +1843,18 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         keyInput.addEventListener("input", () => {
           s.key = keyInput.value.trim();
         });
-        const deployInput = document.createElement("input");
-        deployInput.type = "text";
-        deployInput.autocomplete = "off";
-        deployInput.placeholder = "Tên Deployment thật trên k8s";
-        deployInput.value = s.deployment || "";
-        deployInput.setAttribute("list", datalistId);
-        deployInput.addEventListener("input", () => {
-          s.deployment = deployInput.value.trim();
-        });
         subrow.appendChild(keyInput);
-        subrow.appendChild(deployInput);
+        subrow.appendChild(
+          buildSearchableSelect({
+            options: deploymentOptions,
+            value: s.deployment || "",
+            allowFreeText: true,
+            placeholder: "Tên Deployment thật trên k8s",
+            onChange: (value) => {
+              s.deployment = String(value || "").trim();
+            }
+          })
+        );
         if (group.services.length > 1) {
           const removeBtn = document.createElement("a");
           removeBtn.href = "#";
@@ -1656,16 +1880,6 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         renderGroupsTable();
       });
       servicesWrap.appendChild(addServiceBtn);
-      if (Array.isArray(group._serviceOptions) && group._serviceOptions.length) {
-        const datalist = document.createElement("datalist");
-        datalist.id = datalistId;
-        group._serviceOptions.forEach((name) => {
-          const o = document.createElement("option");
-          o.value = name;
-          datalist.appendChild(o);
-        });
-        servicesWrap.appendChild(datalist);
-      }
       servicesField.value.appendChild(servicesWrap);
 
       const deleteGroupBtn = document.createElement("a");
@@ -1909,6 +2123,21 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     renderRancherTable();
     renderDbEnvTable();
     renderGroupsTable();
+
+    // Cascade Project/Namespace cho nhóm ĐÃ LƯU — trước đây chỉ fetch lúc user đổi dropdown Cluster
+    // (change handler), nên nhóm có sẵn projectId/namespace lúc mới tải trang không có _projects/
+    // _namespaces để buildGroupCascadeCell() vẽ combobox, rơi về ô nhập tay hiện projectId thô. Cùng
+    // lý do, gợi ý Deployment (group._deploymentOptions) trước đây cũng chỉ fetch khi user tự đổi
+    // Namespace — nhóm đã lưu sẵn đủ rancherKey/projectId/namespace lúc tải trang không có gợi ý
+    // nào, trông y hệt ô nhập tay thường (bug thật user báo lại: "vẫn là textbox chứ không phải
+    // combobox").
+    state.namespaceGroups.forEach((group) => {
+      if (!group.rancherKey) return;
+      fetchGroupCascade(group, "projects").then(() => {
+        if (group.namespace) return fetchGroupCascade(group, "namespaces");
+      });
+      if (group.projectId && group.namespace) fetchGroupDeploymentOptions(group);
+    });
   }
 
   await load();

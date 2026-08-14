@@ -3,11 +3,17 @@
   "identifier": "default",
   "description": "Quyền mặc định cho cửa sổ chính k8sql",
   "windows": ["main"],
+  "webviews": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
   "permissions": [
     "core:default",
     "shell:allow-execute",
     "shell:allow-spawn",
     "dialog:default",
+    "dialog:allow-save",
+    "dialog:allow-open",
     "autostart:default"
   ]
 }

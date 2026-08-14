@@ -155,9 +155,22 @@
   aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin: 0; padding: 8px 10px 4px; }
   /* border-bottom thường sẽ dừng đúng mép phải aside (x = --aside-width), hụt 5px so với đường dọc
      .divider-v::after thật (x = --aside-width + 5px, vẽ ở mép phải #dividerH nằm SAU aside) — cùng
-     bản chất bug đã fix ở header .header-left phía trên, dùng ::after riêng để kéo dài thêm 5px. */
+     bản chất bug đã fix ở header .header-left phía trên, dùng ::after riêng để kéo dài thêm 5px.
+     Bug thật đã gặp + fix (2026-08-14, chỉ thấy trên WebKitGTK thật qua screenshot+đo pixel, không
+     thấy qua Chromium/Playwright — verify bằng `import -window` (ImageMagick) + PIL đọc pixel trực
+     tiếp, đúng cách đã dùng cho các bug đường line khác ở Phase 9):
+     1. `right: -5px` KHÔNG hoạt động trên WebKitGTK — đo pixel cho thấy line dừng đúng tại mép phải
+        `.filter-row` (không kéo dài thêm chút nào), hụt nguyên 5px so với `.divider-v::after`. Fix:
+        đổi sang `width: calc(100% + 5px)` (định nghĩa trực tiếp bề rộng thay vì offset âm).
+     2. Line render DÀY 2px thay vì 1px (2 hàng pixel cùng màu đặc, không phải viền mờ do
+        anti-alias) — do `height:1px; background` trên absolutely-positioned div không snap đúng
+        lưới pixel thiết bị khi tổng chiều cao `.filter-row` (padding + input) ra số lẻ dưới
+        devicePixelRatio không nguyên. So sánh đối chứng: `.divider-v::after` (cùng kỹ thuật nhưng
+        nằm trong flex item có width cố định 5px) vẫn render đúng 1px — chứng tỏ không phải lỗi
+        DPR toàn cục. Fix: đổi `height:1px; background` sang `border-top: 1px solid` (browser hint
+        border thành hairline đúng lưới pixel thiết bị, khác cách rasterize 1 rect nền thường). */
   aside .filter-row { padding: 6px 8px; position: relative; }
-  aside .filter-row::after { content: ""; position: absolute; left: 0; right: -5px; bottom: 0; height: 1px; background: var(--border); }
+  aside .filter-row::after { content: ""; position: absolute; left: 0; width: calc(100% + 5px); bottom: 0; height: 0; border-top: 1px solid var(--border); z-index: 1; }
   aside input[type="text"] {
     width: 100%;
     padding: 6px 8px;
@@ -398,6 +411,25 @@
     max-height: calc(100vh - 64px); overflow-y: auto;
     box-shadow: 0 10px 30px rgba(0,0,0,.25);
   }
+
+  /* Popup "Xem JSON" (icon trước giá trị JSON trong bảng kết quả query, xem renderResultTable()) —
+     kích thước cố định 900x600 theo yêu cầu, khác .modal-box mặc định (768px, cao theo nội dung). */
+  .modal-box.json-view-box {
+    width: 900px; height: 600px;
+    display: flex; flex-direction: column;
+    max-height: calc(100vh - 64px);
+  }
+  .json-view-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+  }
+  .json-view-header h3 { margin: 0; font-size: 14px; }
+  .json-view-body {
+    flex: 1 1 auto; overflow: auto; padding: 12px 16px;
+  }
+  .json-view-icon {
+    cursor: pointer; margin-right: 4px; font-size: 12px;
+  }
 </style>
 <link rel="stylesheet" href="/shared/settings-modal.css" />
 </head>
@@ -410,6 +442,7 @@
     <div class="header-right">
       <div class="header-actions">
         <button id="btnSettings" class="icon-btn" title="Cấu hình">⚙️</button>
+        <button id="btnUpdate" class="icon-btn" title="Cập nhật ứng dụng">⬇️</button>
         <span class="divider"></span>
         <button id="btnExecute" class="icon-btn" title="Execute (Ctrl+Enter)" disabled>▶</button>
         <span class="divider"></span>
@@ -433,6 +466,15 @@
 
   <div class="modal-overlay" id="settingsModal" hidden>
     <div class="modal-box" id="settingsModalMount"></div>
+  </div>
+  <div class="modal-overlay" id="jsonViewModal" hidden>
+    <div class="modal-box json-view-box">
+      <div class="json-view-header">
+        <h3>Xem JSON</h3>
+        <button type="button" id="jsonViewClose" class="icon-btn" title="Đóng">✕</button>
+      </div>
+      <div class="json-view-body" id="jsonViewBody"></div>
+    </div>
   </div>
   <main>
     <aside>
@@ -481,6 +523,7 @@
     const treeFilter = document.getElementById("treeFilter");
     const treeEl = document.getElementById("tree");
     const btnSettings = document.getElementById("btnSettings");
+    const btnUpdate = document.getElementById("btnUpdate");
     const btnExecute = document.getElementById("btnExecute");
     const btnClear = document.getElementById("btnClear");
     const btnExport = document.getElementById("btnExport");
@@ -490,6 +533,21 @@
     const settingsModal = document.getElementById("settingsModal");
     const settingsModalMount = document.getElementById("settingsModalMount");
     let settingsModalInited = false;
+    const jsonViewModal = document.getElementById("jsonViewModal");
+    const jsonViewBody = document.getElementById("jsonViewBody");
+    const jsonViewClose = document.getElementById("jsonViewClose");
+
+    function openJsonViewModal(value) {
+      jsonViewBody.innerHTML = "";
+      jsonViewBody.appendChild(window.renderJsonTree(value));
+      jsonViewModal.hidden = false;
+    }
+    jsonViewClose.addEventListener("click", () => {
+      jsonViewModal.hidden = true;
+    });
+    jsonViewModal.addEventListener("click", (e) => {
+      if (e.target === jsonViewModal) jsonViewModal.hidden = true;
+    });
     const editorContainerEl = document.getElementById("editor");
     const resultsWrapEl = document.getElementById("resultsWrap");
     const editorEmptyEl = document.getElementById("editorEmpty");
@@ -1427,12 +1485,22 @@
           if (value === null || value === undefined) {
             valueEl.textContent = "NULL";
             td.className = "null-value";
+            td.appendChild(valueEl);
           } else if (typeof value === "object") {
+            // Cột kiểu json/jsonb đã được pg driver tự parse thành object — icon trước giá trị
+            // (srs/nangcapk8sql/v1.md #2), click mở popup 900x600 xem JSON qua renderJsonTree().
+            const jsonIcon = document.createElement("span");
+            jsonIcon.className = "json-view-icon";
+            jsonIcon.textContent = "🔍";
+            jsonIcon.title = "Xem JSON";
+            jsonIcon.addEventListener("click", () => openJsonViewModal(value));
             valueEl.textContent = JSON.stringify(value);
+            td.appendChild(jsonIcon);
+            td.appendChild(valueEl);
           } else {
             valueEl.textContent = String(value);
+            td.appendChild(valueEl);
           }
-          td.appendChild(valueEl);
           tr.appendChild(td);
         }
         tbody.appendChild(tr);
@@ -1524,7 +1592,34 @@
     // Export/Import cấu hình kết nối — kèm luôn giá trị connection string thật (khác mọi endpoint
     // /sql/* khác, cố tình không bao giờ lộ credential), mục đích "share cấu hình dùng ngay được"
     // cho người khác. Xem k8sctl/CLAUDE.md mục "SQL Tool".
+    // window.__TAURI__ (WebView desktop thật, cần "withGlobalTauri": true trong tauri.conf.json) —
+    // ưu tiên dialog native của Tauri thay vì showSaveFilePicker/showOpenFilePicker (File System
+    // Access API): 2 API này KHÔNG hoạt động đáng tin cậy trên WebKitGTK (bug thật đã gặp — promise
+    // treo vô thời hạn, không lỗi không dialog, click "vô phản hồi" — xem k8sql/CLAUDE.md). Chỉ
+    // dùng nhánh cũ khi chạy như trang web thường (dev server qua trình duyệt, không có Tauri).
     async function exportConfigFile() {
+      if (window.__TAURI__) {
+        try {
+          const targetPath = await window.__TAURI__.dialog.save({
+            defaultPath: "k8sql-config.sqlite",
+            filters: [{ name: "SQLite", extensions: ["sqlite"] }]
+          });
+          if (!targetPath) return; // user huỷ dialog
+          const response = await fetch("/sql/config/export-to-path", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: targetPath })
+          });
+          const body = await response.json().catch(() => null);
+          if (!response.ok || !body?.success) throw new Error(body?.message || `HTTP ${response.status}`);
+          const envCount = body?.data?.environmentsCount ?? 0;
+          const clusterCount = body?.data?.rancherClustersCount ?? 0;
+          toolbarStatus.textContent = `Đã export cấu hình (${envCount} connection, ${clusterCount} Rancher cluster).`;
+        } catch (error) {
+          toolbarStatus.textContent = `Lỗi export: ${error.message}`;
+        }
+        return;
+      }
       try {
         const response = await fetch("/sql/config/export");
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1557,6 +1652,12 @@
       }
     }
 
+    function describeImportResult(data) {
+      const envCount = data?.dbEnvironmentsImported?.length ?? 0;
+      const clusterCount = data?.rancherClustersImported?.length ?? 0;
+      return `Đã import cấu hình (${envCount} connection, ${clusterCount} Rancher cluster).`;
+    }
+
     async function applyImportedConfig(bytes) {
       const response = await fetch("/sql/config/import", {
         method: "POST",
@@ -1573,10 +1674,34 @@
       tableCache.clear();
       columnCache.clear();
       await loadEnvironments();
-      toolbarStatus.textContent = "Đã import cấu hình.";
+      toolbarStatus.textContent = describeImportResult(body.data);
     }
 
     async function importConfigFile() {
+      if (window.__TAURI__) {
+        try {
+          const sourcePath = await window.__TAURI__.dialog.open({
+            multiple: false,
+            filters: [{ name: "SQLite", extensions: ["sqlite"] }]
+          });
+          if (!sourcePath) return; // user huỷ dialog
+          const response = await fetch("/sql/config/import-from-path", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: sourcePath })
+          });
+          const body = await response.json().catch(() => null);
+          if (!response.ok || !body?.success) throw new Error(body?.message || `HTTP ${response.status}`);
+          schemaCache.clear();
+          tableCache.clear();
+          columnCache.clear();
+          await loadEnvironments();
+          toolbarStatus.textContent = describeImportResult(body.data);
+        } catch (error) {
+          toolbarStatus.textContent = `Lỗi import: ${error.message}`;
+        }
+        return;
+      }
       try {
         let bytes;
         if (window.showOpenFilePicker) {
@@ -1604,6 +1729,28 @@
         if (error.name !== "AbortError") {
           toolbarStatus.textContent = `Lỗi import: ${error.message}`;
         }
+      }
+    }
+
+    // Nút "Cập nhật" (cạnh "Cấu hình") — git pull + rebuild + cài lại (.deb, qua cmdctl sudo) + tự
+    // restart app, xem server/src/selfUpdate.ts. Chạy lâu (build ~1 phút) — khoá nút trong lúc chạy,
+    // sau khi thành công app tự tắt+mở lại nên không cần tự bật lại nút (trang sẽ mất kết nối).
+    async function updateApp() {
+      if (!window.confirm("Cập nhật ứng dụng lên bản mới nhất? Ứng dụng sẽ tự khởi động lại sau khi cài xong (mất khoảng 1-2 phút).")) {
+        return;
+      }
+      btnUpdate.disabled = true;
+      toolbarStatus.textContent = "Đang cập nhật... (git pull + build + cài lại, có thể mất 1-2 phút)";
+      try {
+        const response = await fetch("/internal/self-update", { method: "POST" });
+        const body = await response.json().catch(() => null);
+        if (!response.ok || !body?.success) {
+          throw new Error(body?.message || `HTTP ${response.status}`);
+        }
+        toolbarStatus.textContent = body.data?.message || "Đã cập nhật, ứng dụng sẽ tự khởi động lại...";
+      } catch (error) {
+        toolbarStatus.textContent = `Lỗi cập nhật: ${error.message}`;
+        btnUpdate.disabled = false;
       }
     }
 
@@ -1650,6 +1797,7 @@
           rancherProjects: "/settings/rancher-projects",
           rancherNamespaces: "/settings/rancher-namespaces",
           rancherServices: "/settings/rancher-services",
+          rancherDeployments: "/settings/rancher-deployments",
           rancherClusterOptions: "/settings/rancher-cluster-options",
           rancherProjectsAdhoc: "/settings/rancher-projects-adhoc",
           rancherNamespacesAdhoc: "/settings/rancher-namespaces-adhoc",
@@ -1678,6 +1826,7 @@
     btnClear.addEventListener("click", clearAll);
     btnExport.addEventListener("click", exportConfigFile);
     btnImport.addEventListener("click", importConfigFile);
+    btnUpdate.addEventListener("click", updateApp);
 
     // Nút "+" cuối thanh tab mở dropdown 2 mục (Query SQL/Query NoSQL) — không có component dropdown
     // dùng chung sẵn có trong codebase nên tự viết tối giản: absolute-position + toggle [hidden],

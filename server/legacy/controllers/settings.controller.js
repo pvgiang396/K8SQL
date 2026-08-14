@@ -115,6 +115,19 @@ async function listRancherServices(req, res, next) {
   }
 }
 
+async function listRancherDeployments(req, res, next) {
+  try {
+    const data = await settingsService.listRancherDeployments(
+      req.query.rancherKey,
+      req.query.projectId,
+      req.query.namespace
+    );
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function listRancherClusterOptions(req, res, next) {
   try {
     requireBodyFields(req.body, ["rancherUrl", "token"]);
@@ -234,6 +247,7 @@ module.exports = {
   listRancherProjects,
   listRancherNamespaces,
   listRancherServices,
+  listRancherDeployments,
   listRancherClusterOptions,
   listRancherProjectsAdhoc,
   listRancherNamespacesAdhoc,

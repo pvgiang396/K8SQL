@@ -414,13 +414,253 @@ k8sql/
      Key tự sinh từ URL) rỗng, khiến nút "Xóa ngay" trong `confirmDeleteWithKey` không cách nào gõ
      khớp chuỗi rỗng để bật lên → không xoá được. Fix: bỏ qua bước gõ xác nhận Key khi
      `!cluster.name`, xoá thẳng.
+- [x] **4 fix theo `srs/nangcapk8sql/v1.md` (2026-08-13) — đã rebuild `.deb`+`.exe`
+  (`node scripts/build-cross-platform.mjs`) và cài lại `.deb` trên máy dev thật**:
+  1. **Spacing toggle "Khởi động cùng hệ thống"**: thêm `.sm-block-toggle { margin-top: -6px;
+     margin-bottom: 8px }` (`settings-modal.css`) override riêng, không sửa `.sm-block` dùng chung.
+  2. **Combobox gõ-để-lọc dùng chung toàn modal**: `buildSearchableSelect({options, value, onChange,
+     disabled, placeholder, title, allowFreeText})` (`settings-modal.js`, đầu file) — dropdown TỰ VẼ
+     bằng JS (KHÔNG dùng `<input list>`+`<datalist>` — bản đầu dùng datalist đã bị lỗi thật, xem mục
+     "Bug thật — datalist không hoạt động trên WebKitGTK" bên dưới). Thay toàn bộ `<select>` thuần
+     trong modal: `buildCascadeCell()`/`buildGroupCascadeCell()` (Project/Namespace/Pod/Cluster
+     cascade — nhánh "nhập tay" đổi từ option sentinel `MANUAL_OVERRIDE_SENTINEL` sang link riêng
+     `.sm-cascade-manual-link`, đã xoá sentinel không dùng nữa), `rancherSelect` (Rancher Key ở
+     Connection String), `clusterSelect` (Rancher Cluster ở Nhóm Namespace), và cả ô Deployment
+     (`allowFreeText: true` — không ép khớp đúng 1 mục, `onChange` bắn theo mỗi lần gõ). KHÔNG đổi
+     `envSelect` (enum tĩnh 3 giá trị prod/test, Nhóm Namespace).
+  3. **Deployment combobox load từ API thật**: trước đây cột "Service → Deployment" (Nhóm Namespace)
+     gợi ý qua `endpoints.rancherServices` (K8s Service, gắn nhầm nhãn) — thêm
+     `rancherClient.listDeployments()` (Norman API `/workloads?type=deployment`, viết độc lập
+     KHÔNG import `services/providers/rancher/deployment.js` để tránh circular-require — file đó
+     ngược lại import `rancherRequest`/`projectPrefix` từ `rancher.client.js`) + route
+     `GET /settings/rancher-deployments` (`settings.controller.js`/`settings.service.js`/`app.js`,
+     chỉ hỗ trợ `rancherKey` đã lưu, không có nhánh adhoc — đúng giới hạn Nhóm Namespace) +
+     `endpoints.rancherDeployments` (`index.html`) + `fetchGroupDeploymentOptions()`/
+     `group._deploymentOptions` (đổi tên từ `fetchGroupServiceOptions()`/`_serviceOptions`) trong
+     `settings-modal.js`.
+  4. **Link "dò pod khả dụng tự động"** — mỗi Connection String, hiện khi `env.urlValue` có giá trị:
+     `autoDetectPod(env)` lặp qua `env._pods`, gọi `endpoints.testDbConnectionAdhoc` với
+     `existingPodName` override từng pod ứng viên (endpoint này nhận tham số này ĐỘC LẬP với việc
+     entry đã "Áp dụng" hay chưa, xem `services/db.service.js::testConnectionAdhoc()` — dùng được
+     cho MỌI Connection String, không riêng entry chưa lưu) — dừng ở pod đầu tiên kết nối được, hỏi
+     xác nhận qua `confirmSimple()` (biến thể đơn giản của `confirmDeleteWithKey()`, không bắt gõ lại
+     key) rồi mới gán `env.existingPodName`.
+  5. **Icon xem JSON trong bảng kết quả query**: `renderResultTable()` (`index.html`) — nhánh
+     `typeof value === "object"` (cột `json`/`jsonb` đã được pg driver tự parse) chèn thêm
+     `<span class="json-view-icon">🔍</span>` trước giá trị, click gọi `openJsonViewModal(value)` —
+     mở `#jsonViewModal` (overlay mới, `.modal-box.json-view-box { width:900px; height:600px }`),
+     render nội dung bằng `window.renderJsonTree()` (tái dùng nguyên vẹn từ `vendor/json-tree.js`,
+     trước đó chỉ dùng cho kết quả Mongo). Không thêm logic dò JSON trên string thường (`JSON.parse`)
+     — chỉ áp dụng cho giá trị đã là object thật.
+  6. **Bug thật đã gặp + fix — combobox không mở gợi ý trên WebKitGTK thật**: bản đầu của
+     `buildSearchableSelect()` dùng `<input list="...">` + `<datalist>` — chạy đúng trên
+     Chromium/Playwright lúc tôi tự verify, nhưng user báo lại (kèm ảnh chụp app `.deb` đã cài) field
+     Project/Pod của 1 Connection String **đã lưu** hiện đúng giá trị nhưng click không mở danh sách
+     gợi ý — WebKitGTK không mở popup `<datalist>` khi click, khác Chromium (tiền lệ WebKitGTK lệch
+     Chromium, xem bug thứ 3 ở trên). Đã tự verify thêm bug thứ 2 liên quan: nhóm namespace **đã lưu
+     sẵn** namespace không tự tải gợi ý Deployment lúc mở trang (chỉ tải khi đổi lại dropdown
+     Namespace) — đã fix bằng cách gọi thêm `fetchGroupDeploymentOptions(group)` trong bootstrap
+     `load()` cạnh đoạn fetch Project/Namespace đã có sẵn.
+     **Fix chính**: viết lại `buildSearchableSelect()` bỏ hẳn `<datalist>`, tự vẽ dropdown bằng JS
+     (`.sm-select-dropdown`/`.sm-select-option`, lọc theo substring khi gõ, chọn qua `mousedown` +
+     `preventDefault()` để né blur trước khi click kịp đăng ký). **Dropdown append vào
+     `document.body`** (portal, cùng kiểu `.sm-confirm-overlay`) thay vì làm con trực tiếp của ô input
+     — mọi card trong modal nằm trong `.sm-section { overflow: hidden }` (clip góc bo tròn children),
+     nếu dropdown là con lồng bên trong sẽ bị cắt cụt ngay khi tràn quá khung card. Vị trí dropdown
+     tính bằng `getBoundingClientRect()` của input (`position: fixed`), không theo dõi scroll (dropdown
+     tự đóng khi input mất focus, chấp nhận không tự follow nếu user scroll trong lúc đang mở).
+     **Giới hạn verify thật đã gặp**: không tự động hoá được click vào cửa sổ WebKitGTK thật qua
+     `xdotool` trên máy dev này — cửa sổ liên tục mất active focus về lại phiên code-server đang chạy
+     (không phải do khoá màn hình, `loginctl` báo session `active`), `xdotool windowactivate`/`click`
+     gửi được sự kiện nhưng không tin cậy giữ focus đủ lâu để nhận click. Đã verify được: code mới
+     (không còn `input.setAttribute("list", ...)` nào trong bundle) có mặt đúng trong bản `.deb` đã
+     cài + chạy (`grep` trực tiếp `/usr/lib/k8sql/public/shared/settings-modal.js`), và cơ chế dropdown
+     hoạt động đúng qua dev server + Playwright (mở đúng vị trí, không bị `.sm-section` cắt, không lỗi
+     console) — nhưng **chưa tự click-xác nhận được trên WebKitGTK thật**, cần user tự mở Settings
+     modal trên máy đã cài để xác nhận lần cuối.
+
+## Fix Import/Export + tính năng "Cập nhật" (2026-08-14), đã verify E2E thật trên app `.deb` đã cài
+
+**Bug đã fix — Import/Export cấu hình "vô phản hồi"**: `exportConfigFile()`/`importConfigFile()`
+(`public/index.html`) dùng `window.showSaveFilePicker`/`showOpenFilePicker` (File System Access
+API) — API này tồn tại trên WebKitGTK (Tauri webview Linux) nhưng promise treo VÔ THỜI HẠN khi gọi
+thật (không lỗi, không dialog nào hiện ra — khác Chromium nơi API này hoạt động đầy đủ và Playwright
+KHÔNG phát hiện được bug này, đúng pattern "WebKitGTK lệch Chromium" đã ghi nhiều lần trong Phase 9).
+Fix: khi có `window.__TAURI__` (cần bật `"withGlobalTauri": true` trong `tauri.conf.json`, trước đó
+chưa bật) → dùng `window.__TAURI__.dialog.save()`/`.open()` (plugin `tauri-plugin-dialog`, đã có sẵn
+trong `Cargo.toml`/`capabilities/default.json`, chỉ chưa được JS dùng tới) lấy path thật, rồi gọi 2
+route MỚI `POST /sql/config/export-to-path`/`import-from-path` (`db-config.controller.js`) — sidecar
+Node tự đọc/ghi file trực tiếp qua path đó (không cần thêm `tauri-plugin-fs`, vì Node vốn đã có toàn
+quyền filesystem). Nhánh cũ (File System Access API + `<input type=file>` fallback) GIỮ NGUYÊN cho
+trường hợp chạy như trang web thường (dev server qua trình duyệt, không có `window.__TAURI__`).
+
+**Bug thứ 2 — sâu hơn, chỉ lộ ra khi user tự click qua GUI thật (không bắt được bằng gọi thẳng route
+Node)**: sau khi đổi sang `window.__TAURI__.dialog.save()`, click vẫn "vô phản hồi" — thêm log chẩn
+đoán tạm (POST `/internal/client-log`, đã xoá sau khi fix xong) để bắt lỗi thật không qua devtools
+(Cargo.toml chưa bật feature `"devtools"`) → lỗi thật: `"Command plugin:dialog|save not allowed by
+ACL"`. Root cause: cửa sổ chính load qua `WebviewUrl::External(http://127.0.0.1:<port>/)`
+(`main.rs`) — Tauri v2 capability mặc định (`"local": true` ngầm định khi không khai `"remote"`) CHỈ
+áp dụng cho origin asset-protocol nội bộ (`tauri://localhost`), KHÔNG áp dụng cho URL "External" dù
+đó là chính sidecar cục bộ của app. Fix: thêm `"remote": {"urls": ["http://127.0.0.1:*",
+"http://localhost:*"]}` vào `capabilities/default.json` (port động do `ports.rs` tự dò nên phải dùng
+wildcard `*`, không hardcode `4210`) + thêm tường minh `dialog:allow-save`/`dialog:allow-open` (dù
+`dialog:default` về lý thuyết đã bao gồm 2 quyền này — vẫn giữ lại tường minh cho chắc, không hại gì)
++ `"webviews": ["main"]` (trước đó thiếu, capability v2 phân biệt `windows`/`webviews` riêng).
+**Bài học quan trọng cho mọi tính năng Tauri IPC sau này trong app này**: bất kỳ lệnh
+`window.__TAURI__.*` nào gọi từ trang load qua `WebviewUrl::External` (không phải asset protocol)
+ĐỀU cần capability khai `"remote"` khớp origin đó, nếu không sẽ luôn bị chặn bởi ACL — dễ nhầm với
+"thiếu permission" (đã tưởng vậy lúc đầu, thêm `dialog:allow-save` tường minh KHÔNG fix được cho tới
+khi thêm đúng `"remote"`) trong khi vấn đề thật là origin không được công nhận. Đã verify bằng log
+chẩn đoán thật (không đoán): thêm permission tường minh vẫn còn lỗi ACL y hệt → chỉ hết lỗi SAU khi
+thêm `"remote"` → dialog mở thật, chọn path, ghi file thành công (`ls` xác nhận file `.sqlite` tồn
+tại đúng nội dung tại path user chọn).
+
+**Tính năng mới — nút "Cập nhật"** (🔄, cạnh "Cấu hình" ⚙️, cùng nhóm không phân cách): tự động
+`git pull` + `node scripts/build-cross-platform.mjs --targets linux` + cài lại `.deb` (qua cmdctl
+`POST /exec {sudo:true}`, xem [`cmdctl/CLAUDE.md`](../cmdctl/CLAUDE.md) — KHÔNG tự `sudo` trực tiếp)
++ tự kill process cũ/relaunch process mới. Logic tại `server/src/selfUpdate.ts` (route
+`POST /internal/self-update`, đăng ký trong `bootstrap.ts`). **Yêu cầu 2 biến môi trường lúc khởi
+động app** (không hardcode path, theo rule cross-platform): `K8SQL_SOURCE_DIR` (thư mục checkout
+source k8sql — bắt buộc, thiếu sẽ báo lỗi rõ ràng khi bấm nút) và `CMDCTL_URL` (tuỳ chọn, mặc định
+`http://127.0.0.1:3003`, cần cmdctl đã chạy sẵn — self-update KHÔNG tự khởi động cmdctl, chỉ báo lỗi
+rõ nếu health-check thất bại). Chỉ hỗ trợ Linux (báo lỗi rõ ràng trên Windows/macOS, xem lý do tương
+tự "macOS không cross-build" ở Phase 6 — chưa có hạ tầng cài đặt tự động cho platform khác).
+
+**3 bug thật nghiêm trọng đã gặp + fix khi verify E2E** (chạy đi chạy lại self-update THẬT trên app
+cài thật, không chỉ đọc code — mỗi bug chỉ lộ ra khi chạy thật, không phát hiện được bằng review):
+1. **PHẢI dùng `pkill -9`, không phải mặc định (SIGTERM)**: sidecar đang xử lý CHÍNH request
+   self-update — `bootstrap.ts`'s `process.on("SIGTERM", () => server.close(() => process.exit(0)))`
+   chờ `server.close()` đóng hết socket keep-alive, treo vô thời hạn nếu client (trình duyệt) chưa
+   đóng kết nối hẳn. Cùng bug/fix áp dụng cho `/internal/shutdown` (route Tauri gọi lúc "Exit") từ
+   trước — route đó né được nhờ tự `setTimeout(() => process.exit(0), 100)`.
+2. **PHẢI dùng `pkill -f` (khớp cmdline), KHÔNG dùng `pkill -x` (khớp comm)**: binary SEA
+   (`k8sql-server`) có `/proc/<pid>/comm` thật là `"MainThread"` (Node tự đặt tên thread chính,
+   KHÔNG phải tên binary) — `pkill -x k8sql-server` KHÔNG BAO GIỜ khớp dù process đang sống. Hệ quả
+   tự verify được: sidecar cũ sống sót qua pkill, app mới phải tự dò sang port 4211 (`ports.rs`)
+   thay vì 4210.
+3. **Bug nghiêm trọng nhất — PHẢI neo `^` đầu pattern, tránh tự-kill chính mình**: script respawn
+   chạy qua `spawn("bash", ["-c", script])` — cmdline của TIẾN TRÌNH BASH đang chạy script đó cũng
+   CHỨA literal `"k8sql-server"` (chính là text của lệnh `pkill -9 -f k8sql-server` bên trong script)
+   → `pkill -f` không neo sẽ tự khớp NGƯỢC vào cha của chính nó, giết luôn tiến trình bash đang chạy
+   nó → mọi lệnh SAU (kill tray, sleep, relaunch) không bao giờ chạy. Triệu chứng: sidecar bị kill
+   đúng (dòng đầu kịp chạy) nhưng tray/relaunch không bao giờ xảy ra, không còn `bash -c` nào sống để
+   debug tiếp. Fix: pattern `^[^ ]*k8sql-server`/`^[^ ]*k8sql( --tray)?$` — neo `^` bắt cmdline PHẢI
+   BẮT ĐẦU bằng path/tên binary thật; cmdline `bash -c "sleep 1 ; pkill ..."` bắt đầu bằng
+   `"bash -c"` (có khoảng trắng ngay sau `"bash"`) nên không thể khớp pattern yêu cầu 0 khoảng trắng
+   trước khi gặp `k8sql-server`/`k8sql`.
+
+**Verify E2E thật đã làm** (không chỉ compile/typecheck): trigger `POST /internal/self-update` trên
+app `.deb` đang chạy thật nhiều lần liên tiếp trong lúc code còn bug (bắt được cả 3 bug trên bằng
+quan sát PID/port/process sống-chết qua `ps`/`pgrep`/`readlink /proc/<pid>/exe`), sau khi fix xong cả
+3 → chạy lại: PID sidecar+tray đổi hẳn sang PID mới, cài đúng file `.deb` vừa build (`readlink -f
+/proc/<pid>/exe` = `/usr/bin/k8sql-server`, không `(deleted)`), `/health` ổn định liên tục sau đó,
+KHÔNG còn tiến trình trùng lặp. **Chưa tự click nút qua GUI thật** (cùng giới hạn xdotool/WebKitGTK
+đã ghi ở Phase 9 mục "3 fix theo srs/nangcapk8sql/v1.md") — verify bằng gọi thẳng
+`POST /internal/self-update` (route Node, cùng code path nút gọi), rủi ro còn lại chỉ nằm ở phần
+JS thuần (`confirm()`/`fetch()`/disable button) trong `index.html`, đã đọc lại kỹ không thấy vấn đề.
+
+## Fix export/import "Cấu hình" thiếu Rancher cluster + không ghi qua SQLite (2026-08-14)
+
+Bug report (`srs/LoiImportK8sql/mota.md`): export cấu hình ra `.sqlite`, gửi cho đồng nghiệp (máy
+Windows khác, cài lần đầu) — sau khi import, CỤM DEMO kết nối được nhưng CỤM HUẾ báo ngay
+`Lỗi tải autocomplete schema: Rancher cluster not found in rancher-clusters.json:
+PLATFORM_IDG_VNPT_VN`.
+
+**Root cause — 2 bug cùng gốc trong luồng "Cấu hình" export/import**
+(`server/legacy/services/{db-config.service.js,sql-config-codec.js}`,
+`server/legacy/controllers/db-config.controller.js`, KHÁC với luồng migrate 1-lần
+`importFromK8sctl.ts` — xem ghi chú phân biệt ở mục "Việc cần user tự làm"):
+1. File `.sqlite` xuất ra chỉ có bảng `db_environments` (connection string) — cluster Rancher
+   (`rancher_clusters`, tham chiếu qua `rancherKey` cho `mode: "k8s-tunnel"`) không hề có trong
+   file. CỤM DEMO dùng kết nối trực tiếp (không `rancherKey`) nên không lộ bug; CỤM HUẾ cần cluster
+   `PLATFORM_IDG_VNPT_VN` mà máy đích chưa từng cấu hình → `rancher.client.js:30-34` throw đúng lỗi.
+2. `importConfig()` ghi thẳng `fs.writeFileSync()` vào `config/db-environments.json`/`.env` — bỏ
+   qua SQLite hoàn toàn, cùng loại bug đã fix cho `namespace_groups` (xem `settingsRepo.ts` đầu
+   file): `envShim.materializeLegacyConfig()` (chạy lại mỗi lần khởi động/mỗi lần Settings lưu gì
+   khác) sẽ ĐÈ MẤT dữ liệu vừa import ở lần kế tiếp, vì SQLite chưa từng biết tới nó.
+
+**Fix**:
+- `sql-config-codec.js` — thêm bảng thứ 2 `rancher_clusters (name, data JSON)` trong file
+  `.sqlite` (`encodeToSqliteBuffer`/`decodeFromSqliteBuffer` nhận/trả `{environments,
+  rancherClusters}`); `decodeFromSqliteBuffer()` coi bảng này là rỗng nếu không tồn tại (đọc file
+  export cũ trước bản fix vẫn không lỗi, chỉ thiếu cluster).
+- `db-config.service.js::exportConfig()` — đọc thêm `config/rancher-clusters.json`, gắn
+  `token: process.env[cluster.tokenEnvVar]` vào mỗi cluster — **CHỦ ĐÍCH xuất token thật**, nhất
+  quán với cách `connectionString` thật đã được xuất từ trước (đánh đổi bảo mật đã chấp nhận, xem
+  comment đầu hàm: mục đích "share cấu hình dùng ngay được", người nhận không cần tự xin token
+  Rancher riêng).
+- `db-config.service.js::importConfig()` — viết lại hoàn toàn: đọc cluster/environment HIỆN CÓ, gộp
+  (merge theo `name`, KHÔNG xoá entry cũ không có trong file import — cố ý khác "replace-all" của
+  `settingsRepo.upsertRancherClusters()`/`upsertDbEnvironments()` gốc, vốn dùng cho nút "Áp dụng"
+  Settings UI), rồi ghi qua đúng 2 hàm đó + `settingsRepo.applySecretValues()` (token/connection
+  string thật vào keychain) + `materializeLegacyConfig()` cuối cùng — cùng pattern
+  `settings.service.js::saveRancherClusters()`/`saveDbEnvironments()` đã dùng. Trả thêm
+  `rancherClustersImported`/`dbEnvironmentsImported` (mảng tên) để UI hiển thị rõ đã thêm gì, thay
+  vì chỉ báo "thành công" chung chung.
+- Frontend (`index.html`) — thông báo export/import giờ hiện kèm số connection + số Rancher cluster.
+
+**Verify E2E thật đã làm** (không chỉ đọc code) — dựng 2 sidecar dev riêng biệt (`--data-dir`/
+`--port` khác nhau) + 1 fake native-bridge HTTP giả lập keychain (native_bridge.rs thật cần Tauri,
+máy dev không chạy GUI được — cùng cách Phase 3 đã verify): sidecar "nguồn" tạo 1 Rancher cluster +
+1 connection `mode: "k8s-tunnel"` giống HUẾ qua Settings API, export ra `.sqlite`
+(`node:sqlite` đọc lại xác nhận cả 2 bảng có dữ liệu, cột `token` không rỗng) → import vào sidecar
+"đích" HOÀN TOÀN TRỐNG (giả lập máy đồng nghiệp) → query trực tiếp SQLite đích xác nhận
+`rancher_clusters`/`db_environments` đúng, FK khớp, keychain (fake bridge) có token/connection
+string thật → **kill hẳn tiến trình + khởi động lại** (không chỉ gọi lại route) → dữ liệu vẫn còn
+nguyên qua `materializeLegacyConfig()` (chứng minh bug 2 đã hết) → gọi
+`GET /sql/autocomplete-schema?env=<tên>` (đúng route gây lỗi trong ảnh chụp gốc) → lỗi ĐÃ ĐỔI từ
+`"Rancher cluster not found in rancher-clusters.json"` sang `"Unable to connect to Kubernetes
+cluster" / "Rancher API token invalid..."` (network/auth error hợp lý vì URL/token dùng trong test
+là giả — đúng kỳ vọng: cluster đã resolve được, chỉ còn lỗi kết nối Rancher thật không liên quan gì
+tới bug này). **Chưa rebuild `.deb`/`.exe` cài lại trên máy dev thật** — code path không đụng gì
+tới Tauri/dialog/UI đã fix trước đó, chỉ đổi payload JSON bên trong (giữ nguyên route/method), rủi
+ro thấp nhưng cần build+cài lại trước khi gửi installer mới cho người dùng thật.
+
+## Fix đường line hở dưới ô tìm kiếm (2026-08-14) — root cause KHÔNG phải CSS width
+
+`aside .filter-row::after` (đường ngang dưới ô "Nhập để tìm kiếm...") bị báo "dày hơn bình thường và
+chưa chạm đường dọc bên phải" — tự verify bằng screenshot app thật (`DISPLAY=:0 import -window
+<id> out.png`, KHÔNG dùng Playwright — đúng pattern "chỉ thấy trên WebKitGTK thật" đã lặp lại nhiều
+lần) + đọc pixel bằng PIL (`im.getpixel((x,y))`), không đoán qua ảnh chụp bằng mắt:
+1. **Dày 2px thay vì 1px**: `height:1px; background` trên div absolutely-positioned không snap đúng
+   lưới pixel thiết bị khi containing block có chiều cao lẻ dưới devicePixelRatio không nguyên. Fix:
+   đổi sang `border-top: 1px solid` (browser hint hairline đúng lưới, đối chứng `.divider-v::after`
+   dùng đúng kỹ thuật cũ nhưng nằm trong flex item width cố định vẫn ra đúng 1px — chứng minh không
+   phải lỗi DPR toàn cục).
+2. **Hở đúng 5px trước #dividerH, dù đã `width: calc(100% + 5px)`** — ĐÂY MỚI LÀ ROOT CAUSE THẬT,
+   phát hiện bằng cách test với `width: calc(100% + 50px); background: red` (cực đoan, dễ quan sát):
+   line đỏ **VẪN CÓ khoảng hở đúng 5px** ngay tại vị trí `#dividerH` rồi mới xuất hiện lại phía sau
+   — chứng minh width tính đúng, chỉ là đoạn line nằm NGAY DƯỚI `#dividerH` bị chính `#dividerH` (5px
+   width, `background: var(--bg-alt)` KHÔNG trong suốt, đứng SAU `<aside>` trong DOM nên mặc định vẽ
+   ĐÈ LÊN theo thứ tự DOM khi cả 2 đều `z-index:auto`) che mất — không phải width không hoạt động.
+   Fix: thêm `z-index: 1` vào `.filter-row::after` để nó vẽ TRÊN `#dividerH`. **Bài học**: khi 1 line
+   "chạy đúng chiều dài nhưng vẫn hở tại 1 điểm cố định", nghi ngờ paint-order/z-index của element
+   che phủ tại đúng điểm đó trước khi nghi ngờ lại phép tính kích thước — test bằng màu nổi bật +
+   kích thước cực đoan để phân biệt 2 khả năng thay vì đoán.
+Verify: pixel scan sau fix cho thấy line liên tục 1 hàng pixel từ đầu `.filter-row` tới đúng x nơi
+`.divider-v::after` bắt đầu, không còn khoảng hở nào.
+
+## Nguồn gốc kết nối DB "r3svc-hue" trong Object Explorer — không phải bug, do AI thêm khi debug
+
+User thắc mắc kết nối `r3svc-hue (dvcchudong.hue.gov.vn)` xuất hiện trong danh sách Connection String
+dù không tự cấu hình. Tra trực tiếp SQLite (`~/.local/share/com.pvgiang396.k8sql/k8sql.db`, bảng
+`db_environments`): entry tên `POSTGRESQL_HUE_TANTHUAN_10_167_31_14_5432`, `created_at: 2026-08-13
+14:47:42`, `allow_write: 0` (chỉ đọc), cùng `rancher_cluster_id`/`namespace: applications-nhnn`/pod
+`networktool-75886d8b5c-p2kw9` với entry `POSTGRESQL_APPLICATIONS_NHNN_2026_10_167_31_14_5432` (cùng
+host `10.167.31.14:5432`, khác DB/schema) — khớp đúng thời điểm phiên debug bug VNeID Huế ngày
+2026-08-13 (xem `docs/team-notes.md` mục cùng ngày về `preferred_username=hup1681119063751`), khi AI
+cần tự truy vấn bảng `r3svc.account` thật trên DB Huế để xác minh federated user — tự thêm qua
+Settings API (đặt `allow_write:0` chủ động, đúng nguyên tắc chỉ đọc khi điều tra). Không phải lỗi/rò
+rỉ cấu hình — an toàn để giữ lại (chỉ đọc) hoặc user tự xoá qua Settings nếu không còn cần.
 
 ## AI dùng k8sql
 
 Kiểm tra `curl -s -m 2 http://127.0.0.1:4210/health`. Nếu không phản hồi:
 1. Tự set `DISPLAY=:0` (đã verify hoạt động dù chạy qua Bash tool không kế thừa sẵn biến này — cùng
-   máy/user với phiên desktop, chỉ thiếu env var) rồi tự chạy `k8sql --tray &` (chế độ nền, không bật
-   cửa sổ, xem Phase 8) — không hỏi user mở tay.
+   máy/user với phiên desktop, chỉ thiếu env var) rồi tự chạy `K8SQL_SOURCE_DIR=<path checkout k8sql>
+   k8sql --tray &` (chế độ nền, không bật cửa sổ, xem Phase 8) — không hỏi user mở tay. Kèm
+   `K8SQL_SOURCE_DIR` để nút "Cập nhật" (xem mục ngay trên) hoạt động được — thiếu biến này app vẫn
+   chạy bình thường, chỉ riêng self-update báo lỗi rõ ràng khi bấm.
 2. Đợi vài giây rồi `curl` lại `/health`.
 3. Chỉ nhắc user can thiệp tay nếu bước 1 cũng thất bại thật sự (vd không tìm thấy binary `k8sql`
    trong PATH, hoặc không có `/tmp/.X11-unix/X0`/phiên desktop nào đang mở — máy chưa đăng nhập).
@@ -466,8 +706,13 @@ import lại → `reveal-value` đúng giá trị thật → **user đóng hẳn
   app tự mở — `tauri-plugin-autostart`'s cơ chế cụ thể theo desktop environment (systemd user
   unit/`.desktop` autostart/registry Run key) chưa tự verify được.
 - **2 Rancher cluster placeholder** sau khi import (`K8SOPERATOR-TTN_VNPT_VN`,
-  `PLATFORM_IDG_VNPT_VN`) — thiếu URL+token thật, tự điền qua Settings UI (giờ ghi bền vững qua
-  restart, xem "Settings write-path — ĐÃ FIX" ở trên).
+  `PLATFORM_IDG_VNPT_VN`) — bullet này nói về luồng migrate 1-LẦN từ k8sctl cũ
+  (`server/src/migration/importFromK8sctl.ts`, route `/internal/import-k8sctl-config`) chạy lúc mới
+  cài lần đầu, KHÁC với luồng "Cấu hình" export/import (`db-config.service.js`, xem mục "Fix
+  export/import thiếu Rancher cluster" bên dưới — luồng đó giờ đã mang theo cả token thật, không
+  còn placeholder rỗng nữa). Luồng migrate cũ vẫn giữ nguyên placeholder rỗng có chủ đích (import từ
+  hệ thống k8sctl không có khái niệm Rancher cluster) — thiếu URL+token thật, tự điền qua Settings
+  UI (giờ ghi bền vững qua restart, xem "Settings write-path — ĐÃ FIX" ở trên).
 
 ## Việc KHÔNG port sang k8sql (thay thế bởi Tauri, xoá khỏi phạm vi)
 

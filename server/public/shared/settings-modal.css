@@ -78,6 +78,15 @@
   letter-spacing: .05em;
 }
 
+/* Giảm khoảng cách trên/dưới quanh toggle "Khởi động cùng hệ thống" so với `.sm-block` dùng chung
+   (margin-bottom 16px) — override riêng thay vì sửa `.sm-block`, tránh ảnh hưởng các block khác.
+   margin-top âm để kéo gần header hơn khoảng padding-top 18px của `.sm-body` (toggle là con đầu
+   tiên trong `.sm-body`). */
+.sm-block-toggle {
+  margin-top: -6px;
+  margin-bottom: 8px;
+}
+
 /* Toggle "Khởi động cùng hệ thống" — checkbox thuần + label, không cần component riêng. */
 .sm-toggle-label {
   display: flex;
@@ -442,6 +451,86 @@ a.sm-btn-test img {
   text-decoration: underline;
 }
 
+/* Combobox gõ-để-lọc dùng chung cho mọi danh sách chọn trong modal (buildSearchableSelect() trong
+   settings-modal.js), thay <select> thuần (không hỗ trợ gõ tìm kiếm). Dropdown TỰ VẼ bằng JS
+   (.sm-select-dropdown/.sm-select-option bên dưới) — KHÔNG dùng <input list>+<datalist>: đã thử,
+   chạy đúng trên Chromium/Playwright nhưng KHÔNG mở popup gợi ý khi click trên WebKitGTK thật (app
+   Tauri đã cài, xem k8sql/CLAUDE.md mục Phase 9 bug thứ 3 — tiền lệ WebKitGTK lệch Chromium). */
+.sm-searchable-select {
+  width: 100%;
+  position: relative;
+}
+.sm-searchable-select input {
+  width: 100%;
+  padding-right: 24px;
+}
+.sm-searchable-select::after {
+  content: "▾";
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+/* position:fixed + left/top/width set qua JS (getBoundingClientRect() của input, xem
+   positionDropdown() trong settings-modal.js) — append thẳng vào document.body (portal), né
+   `.sm-section { overflow: hidden }` cắt cụt dropdown khi tràn quá khung card chứa nó. */
+.sm-select-dropdown {
+  position: fixed;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--sm-radius);
+  max-height: 220px;
+  overflow-y: auto;
+  z-index: 200;
+  box-shadow: 0 4px 12px rgba(0,0,0,.15);
+}
+.sm-select-option {
+  padding: 7px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sm-select-option:hover {
+  background: var(--bg-alt);
+}
+.sm-select-option.sm-select-option-empty {
+  color: var(--text-dim);
+  font-style: italic;
+  cursor: default;
+}
+.sm-select-option.sm-select-option-empty:hover {
+  background: none;
+}
+.sm-cascade-manual-link {
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.sm-cascade-manual-link:hover {
+  text-decoration: underline;
+}
+
+/* Link "dò pod khả dụng tự động" dưới field "Pod có sẵn" (Connection String) */
+.sm-pod-autodetect-link {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  margin-top: 4px;
+}
+.sm-pod-autodetect-link:hover {
+  text-decoration: underline;
+}
+.sm-pod-autodetect-link.disabled {
+  color: var(--text-dim);
+  cursor: default;
+  pointer-events: none;
+}
+
 /* Danh sách con lặp lại trong 1 field (Domain/Service của Nhóm Namespace) — mỗi dòng 2 input +
    nút xoá tuỳ chọn, xếp dọc, full width ô value giống .sm-cascade-cell. */
 .sm-field-value .sm-subrow-list {
@@ -462,6 +551,12 @@ a.sm-btn-test img {
 .sm-subrow select {
   flex: 0 0 auto;
   width: auto;
+}
+/* Ô Deployment (buildSearchableSelect với allowFreeText:true) trong .sm-subrow — cần flex:1 1 auto
+   như input[type="text"] thường ở trên, .sm-searchable-select mặc định chỉ width:100%. */
+.sm-subrow .sm-searchable-select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 a.sm-btn-add-sub {
   align-self: flex-start;
@@ -570,6 +665,13 @@ a.sm-btn-add-sub:hover {
   background: var(--bg-alt);
   color: var(--text-dim);
   border: 1.5px solid var(--text-dim);
+}
+/* Nút "Đồng ý" của confirmSimple() (popup gợi ý dùng pod tự động dò) — .sm-confirm-box nằm ngoài
+   .sm-content nên không thừa hưởng `.sm-content button.primary`, cần khai lại riêng ở đây. */
+.sm-confirm-actions button.primary {
+  background: color-mix(in srgb, var(--accent) 15%, var(--bg));
+  color: var(--accent);
+  border: 1.5px solid var(--accent);
 }
 .sm-confirm-actions .sm-btn-danger {
   border: 1.5px solid var(--danger, #e05252);

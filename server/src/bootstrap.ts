@@ -12,6 +12,7 @@ const { getDb } = require("./config/db.ts");
 const { materializeLegacyConfig } = require("./secrets/envShim.ts");
 const { importDbEnvironmentsExport } = require("./migration/importFromK8sctl.ts");
 const keychainClient = require("./secrets/keychainClient.ts");
+const { runSelfUpdate } = require("./selfUpdate.ts");
 
 function readArg(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
@@ -93,6 +94,18 @@ async function main() {
         try {
           const enabled = await keychainClient.setAutostart(Boolean(req.body?.enabled));
           res.json({ success: true, data: { enabled } });
+        } catch (err) {
+          res.status(500).json({ success: false, message: (err as Error).message });
+        }
+      });
+
+      // Nút "Cập nhật" cạnh icon "Cấu hình" (public/index.html) — xem src/selfUpdate.ts cho toàn
+      // bộ logic git pull + rebuild + cài lại (qua cmdctl) + tự restart. Có thể chạy lâu (build
+      // Tauri ~1 phút) nên không set timeout riêng ở tầng route, để nguyên default Express/http.
+      expressApp.post("/internal/self-update", async (_req: import("express").Request, res: import("express").Response) => {
+        try {
+          const result = await runSelfUpdate();
+          res.json({ success: true, data: result });
         } catch (err) {
           res.status(500).json({ success: false, message: (err as Error).message });
         }

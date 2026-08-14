@@ -5,9 +5,24 @@ const path = require("path");
 const { AppError } = require("../utils/error");
 const { loadEnvironments, listEnvironmentsPublic } = require("./db-environment.service");
 const { getBaseDir } = require("../utils/base-dir");
+const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
+const {
+  materializeLegacyConfig,
+  deriveTokenEnvVar,
+  deriveConnStringEnvVar
+} = require("../../src/secrets/envShim.ts");
 
-const CONFIG_PATH = path.join(getBaseDir(), "config", "db-environments.json");
-const ENV_FILE_PATH = path.join(getBaseDir(), ".env");
+const ROOT_DIR = getBaseDir();
+const RANCHER_CLUSTERS_PATH = path.join(ROOT_DIR, "config", "rancher-clusters.json");
+
+function readJsonArray(filePath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 // LƯU Ý BẢO MẬT: exportConfig()/importConfig() là bề mặt API DUY NHẤT trả/nhận credential Postgres
 // THẬT — mọi endpoint /sql/* khác (đặc biệt listEnvironmentsPublic()) cố tình không bao giờ lộ
@@ -21,53 +36,31 @@ const ENV_FILE_PATH = path.join(getBaseDir(), ".env");
 // file thật).
 function exportConfig() {
   const environments = loadEnvironments();
+  const rancherClusters = readJsonArray(RANCHER_CLUSTERS_PATH);
   return {
     environments: environments.map((env) => ({
       ...env,
       connectionString: process.env[env.connectionStringEnvVar] || ""
+    })),
+    rancherClusters: rancherClusters.map((cluster) => ({
+      ...cluster,
+      token: process.env[cluster.tokenEnvVar] || ""
     }))
   };
 }
 
-// Đọc .env hiện tại theo dòng, thay giá trị cho key đã có, append dòng mới cho key chưa có —
-// KHÔNG động tới các dòng/biến khác (Rancher token, PORT...).
-function upsertEnvFile(updates) {
-  let content = "";
-  try {
-    content = fs.readFileSync(ENV_FILE_PATH, "utf8");
-  } catch {
-    content = "";
-  }
-
-  const lines = content.split("\n");
-  const seen = new Set();
-  const newLines = lines.map((line) => {
-    const match = line.match(/^([A-Za-z0-9_]+)=/);
-    if (match && Object.prototype.hasOwnProperty.call(updates, match[1])) {
-      seen.add(match[1]);
-      return `${match[1]}=${updates[match[1]]}`;
-    }
-    return line;
-  });
-
-  for (const [key, value] of Object.entries(updates)) {
-    if (!seen.has(key)) {
-      newLines.push(`${key}=${value}`);
-    }
-  }
-
-  // Bỏ dòng rỗng thừa ở cuối file (append lặp lại nhiều lần không làm .env phình dòng trắng).
-  while (newLines.length > 0 && newLines[newLines.length - 1] === "") {
-    newLines.pop();
-  }
-
-  fs.writeFileSync(ENV_FILE_PATH, newLines.join("\n") + "\n", "utf8");
-}
-
-// environments: mảng entry tự chứa "connectionString" (xem exportConfig()) — tách field này ra
-// trước khi ghi vào db-environments.json (file đó chỉ chứa cấu trúc, KHÔNG chứa secret), giá trị
-// thật ghi riêng vào .env theo đúng "connectionStringEnvVar" của từng entry.
-function importConfig({ environments }) {
+// environments/rancherClusters: mỗi entry tự chứa secret thật ("connectionString"/"token", xem
+// exportConfig()) — ghi qua settingsRepo (SQLite + keychain) rồi materializeLegacyConfig() thay vì
+// fs.writeFileSync() thẳng vào config/*.json/.env như trước 2026-08-14: ghi trực tiếp file bị
+// envShim.materializeLegacyConfig() (chạy lại mỗi lần sidecar khởi động/mỗi lần Settings lưu gì
+// khác) ĐÈ MẤT ngay lần kế tiếp vì SQLite — nguồn sự thật thật sự — chưa từng biết tới dữ liệu vừa
+// import (cùng loại bug đã gặp + fix cho namespace_groups, xem settingsRepo.ts đầu file).
+//
+// Merge theo "name" (ghi đè entry trùng tên, GIỮ NGUYÊN entry cũ không có trong file import) — cố ý
+// KHÁC ngữ nghĩa "replace-all" của settingsRepo.upsertRancherClusters()/upsertDbEnvironments() (dùng
+// cho nút "Áp dụng" toàn bộ danh sách của Settings UI): import chỉ nên BỔ SUNG, không được xoá mất
+// cấu hình khác người nhận đã tự thêm trước đó.
+async function importConfig({ environments, rancherClusters }) {
   if (!Array.isArray(environments) || environments.length === 0) {
     throw new AppError('Body phải có field "environments" là 1 mảng không rỗng.', 400);
   }
@@ -77,37 +70,63 @@ function importConfig({ environments }) {
   if (environments.some((item) => item.connectionString !== undefined && !item.connectionStringEnvVar)) {
     throw new AppError('Entry có "connectionString" bắt buộc phải có "connectionStringEnvVar" đi kèm.', 400);
   }
+  if (rancherClusters !== undefined && !Array.isArray(rancherClusters)) {
+    throw new AppError('"rancherClusters" phải là 1 mảng.', 400);
+  }
+  if ((rancherClusters || []).some((item) => !item || typeof item.name !== "string" || !item.name)) {
+    throw new AppError('Mỗi phần tử "rancherClusters" phải có field "name".', 400);
+  }
 
   const secrets = {};
-  const structuralEntries = environments.map((incoming) => {
+
+  const currentClusters = readJsonArray(RANCHER_CLUSTERS_PATH);
+  const mergedClusters = [...currentClusters];
+  const rancherClustersImported = [];
+  for (const incoming of rancherClusters || []) {
+    const { token, tokenEnvVar, ...structural } = incoming;
+    if (token) {
+      secrets[deriveTokenEnvVar(structural.name)] = token;
+    }
+    const index = mergedClusters.findIndex((item) => item.name === structural.name);
+    if (index >= 0) {
+      mergedClusters[index] = { ...mergedClusters[index], ...structural };
+    } else {
+      mergedClusters.push(structural);
+    }
+    rancherClustersImported.push(structural.name);
+  }
+
+  const currentEnvironments = loadEnvironments();
+  const mergedEnvironments = [...currentEnvironments];
+  const dbEnvironmentsImported = [];
+  for (const incoming of environments) {
     const { connectionString, ...structural } = incoming;
     if (connectionString !== undefined) {
-      secrets[structural.connectionStringEnvVar] = connectionString;
+      secrets[deriveConnStringEnvVar(structural.name)] = connectionString;
     }
-    return structural;
-  });
-
-  const current = loadEnvironments();
-  for (const incoming of structuralEntries) {
-    const index = current.findIndex((item) => item.name === incoming.name);
+    const index = mergedEnvironments.findIndex((item) => item.name === structural.name);
     if (index >= 0) {
-      current[index] = incoming;
+      mergedEnvironments[index] = { ...mergedEnvironments[index], ...structural };
     } else {
-      current.push(incoming);
+      mergedEnvironments.push(structural);
     }
+    dbEnvironmentsImported.push(structural.name);
   }
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(current, null, 2) + "\n", "utf8");
 
+  // Cluster PHẢI ghi trước — db_environments FK vào rancher_clusters qua tên (rancherKey), xem
+  // settingsRepo.upsertDbEnvironments() tự lookup rancher_clusters.id theo tên lúc INSERT/UPDATE.
+  await settingsRepo.upsertRancherClusters(mergedClusters);
+  await settingsRepo.upsertDbEnvironments(mergedEnvironments);
   if (Object.keys(secrets).length > 0) {
-    upsertEnvFile(secrets);
-    // .env chỉ được dotenv.config() đọc 1 lần lúc khởi động — set lại process.env ngay để giá trị
-    // mới import dùng được luôn, không cần restart server.
-    for (const [key, value] of Object.entries(secrets)) {
-      process.env[key] = value;
-    }
+    await settingsRepo.applySecretValues(secrets);
   }
+  await materializeLegacyConfig(ROOT_DIR);
 
-  return listEnvironmentsPublic();
+  return {
+    environments: listEnvironmentsPublic(),
+    rancherClustersImported,
+    dbEnvironmentsImported
+  };
 }
 
 module.exports = {

@@ -217,6 +217,21 @@ async function listServices(rancherClusterName, projectId, namespace, adhoc) {
     }));
 }
 
+// Liệt kê Deployment THẬT (không phải Service) trong 1 namespace — combobox "Deployment" ở
+// "Danh sách Nhóm Namespace" (settings-modal.js), thay input tự do gợi ý sai bằng danh sách Service
+// (srs/nangcapk8sql/v1.md #1). Norman API `/workloads?type=deployment`, cùng endpoint
+// services/providers/rancher/deployment.js::listDeployments() dùng cho thao tác restart/scale —
+// KHÔNG import trực tiếp file đó ở đây (nó ngược lại import rancherRequest/projectPrefix từ chính
+// module này, import lẫn nhau sẽ circular-require).
+async function listDeployments(rancherClusterName, projectId, namespace, adhoc) {
+  const browseCtx = await resolveBrowseCtx(rancherClusterName, adhoc);
+  const ctx = { ...browseCtx, projectId };
+  const res = await rancherRequest(ctx, { path: `${projectPrefix(ctx)}/workloads?type=deployment&limit=-1` });
+  return (res.data || [])
+    .filter((item) => item.namespaceId === namespace)
+    .map((item) => ({ name: item.name }));
+}
+
 module.exports = {
   resolveRancherCluster,
   rancherRequest,
@@ -226,5 +241,6 @@ module.exports = {
   listProjects,
   listNamespaces,
   listServices,
+  listDeployments,
   listClustersAdhoc
 };

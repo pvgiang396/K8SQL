@@ -229,6 +229,12 @@ k8sql/
   gọi cả `server/` lẫn `src-tauri/`) — 1 lệnh tự nhận diện OS hiện tại, build native cho đúng OS đó
   (`scripts/lib/build-native.mjs`, gom lại luồng thủ công cũ) + thử cross-build Windows từ Linux
   (`scripts/lib/build-windows-cross.mjs` + `docker/windows-cross.Dockerfile`).
+  - Khi chạy tương tác bằng `npm run build`, script hiển thị checkbox Windows/Linux/macOS và mặc
+    định chọn cả ba; dùng phím mũi tên hoặc `j`/`k` để di chuyển, Space để chọn/bỏ chọn, Enter để
+    bắt đầu. CI/non-TTY vẫn dùng `npm run build -- --targets linux,windows` không tương tác.
+  - Target macOS từ Linux được dispatch tới `.github/workflows/build.yml` trên GitHub Actions public;
+    artifact được tải về `dist/github-actions/<run-id>/`. Cần `gh auth login` và repo GitHub public
+    mặc định `pvgiang396/K8SQL` (đổi qua `GITHUB_REPOSITORY`).
   - **Sửa 1 hiểu nhầm trước đó**: tưởng "SEA bắt buộc build từ đúng binary Node của OS/arch đích,
     không cross-compile được" — SAI 1 phần. Đã tự verify: bước SEA build được TỪ LINUX cho Windows
     **không cần Docker** — chỉ cần tải `node.exe` bản Windows thật (nodejs.org, không cần chạy),

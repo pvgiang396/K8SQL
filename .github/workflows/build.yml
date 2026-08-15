@@ -1,0 +1,74 @@
+name: Build K8SQL
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "Comma-separated targets: linux,windows,macos"
+        required: true
+        default: "linux,windows,macos"
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - id: targets
+        env:
+          INPUT_TARGETS: ${{ github.event.inputs.targets || 'linux,windows,macos' }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          aliases = {"linux": "linux", "windows": "windows", "win32": "windows", "macos": "macos", "darwin": "macos"}
+          targets = []
+          for item in os.environ["INPUT_TARGETS"].split(","):
+              value = aliases.get(item.strip().lower())
+              if value and value not in targets:
+                  targets.append(value)
+          if not targets:
+              raise SystemExit("No valid target selected")
+          print("matrix=" + json.dumps({"target": targets}, separators=(",", ":")))
+          PY
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.target == 'macos' && 'macos-15' || matrix.target == 'windows' && 'windows-2025' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux dependencies
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libayatana-appindicator3-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix server ci
+      - name: Build selected target
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            linux) npm run build -- --targets linux ;;
+            windows) npm run build -- --targets win32 ;;
+            macos) npm run build -- --targets darwin ;;
+          esac
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8sql-${{ matrix.target }}
+          path: dist/**/*
+          if-no-files-found: error

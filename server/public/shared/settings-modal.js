@@ -545,6 +545,98 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
 
   const state = { rancherClusters: [], dbEnvironments: [], namespaceGroups: [] };
 
+  function setSectionExpanded(sectionKey, expanded) {
+    const body = {
+      rancher: rancherBody,
+      "db-env": dbEnvBody,
+      "namespace-group": groupBody
+    }[sectionKey];
+    const toggle = mountEl.querySelector(`.sm-section-toggle[data-target="${body && body.id}"]`);
+    if (!body || !toggle) return;
+    body.hidden = !expanded;
+    // Chevron SVG tự xoay 90° qua CSS (.sm-section-toggle[aria-expanded="true"] svg), đồng bộ
+    // kiểu với .node-row .caret ở Object Explorer (index.html) — không đổi ký tự ▸/▾ nữa.
+    toggle.setAttribute("aria-expanded", String(expanded));
+  }
+
+  function focusFirstInputInList(container, selector = 'input, select') {
+    const target = container?.querySelector(selector);
+    if (!target) return;
+    target.focus();
+    if (typeof target.select === "function") target.select();
+    const card = target.closest(".sm-card");
+    if (card) card.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function buildK8sAdminPrompt(env, errorMessage) {
+    const label = env.name || "(chưa đặt tên)";
+    const rancher = env.rancherKey || "(không dùng Rancher)";
+    const project = env.projectId || "(chưa chọn)";
+    const namespace = env.namespace || "(chưa chọn)";
+    const host = env.dbHost || "(chưa nhập)";
+    const port = env.dbPort || "(chưa nhập)";
+    const reason = errorMessage || "không có pod nào khả thi";
+    return [
+      "Xin hỗ trợ quản trị K8s cho k8sql để kết nối DB qua tunnel.",
+      `- Connection: name="${label}" engine="${env.engine || ""}" rancherKey="${rancher}" dbHost="${host}" dbPort="${port}"`,
+      `- Project/Namespace: project="${project}" namespace="${namespace}"`,
+      `- Yêu cầu: cấp token/service account có quyền list/get/watch pods, create pods và exec vào namespace "${namespace}" để k8sql có thể mở tunnel tới DB "${host}:${port}".`,
+      `- Lý do cần hỗ trợ: k8sql đã thử các pod hiện có và cả nhánh tự tạo pod tạm nhưng đều không mở được kết nối (chi tiết: ${reason}).`,
+      "- Nếu có thể, vui lòng cấp quyền tạo pod/exec trong namespace trên hoặc cung cấp token có quyền tương ứng để chúng tôi kiểm tra lại từ k8sql."
+    ].join("\n");
+  }
+
+  function showK8sAdminPrompt(env, errorMessage) {
+    const overlay = document.createElement("div");
+    overlay.className = "sm-prompt-overlay";
+
+    const box = document.createElement("div");
+    box.className = "sm-prompt-box";
+
+    const title = document.createElement("h4");
+    title.textContent = "Yêu cầu hỗ trợ quản trị K8s";
+    box.appendChild(title);
+
+    const textarea = document.createElement("textarea");
+    textarea.className = "sm-prompt-text";
+    textarea.readOnly = true;
+    textarea.value = buildK8sAdminPrompt(env, errorMessage);
+    box.appendChild(textarea);
+
+    const actions = document.createElement("div");
+    actions.className = "sm-confirm-actions";
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "primary";
+    copyBtn.textContent = "📋 Sao chép";
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(textarea.value);
+        copyBtn.textContent = "✓ Đã sao chép";
+        setTimeout(() => {
+          copyBtn.textContent = "📋 Sao chép";
+        }, 1200);
+      } catch {
+        copyBtn.textContent = "Không sao chép được";
+      }
+    });
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "secondary";
+    closeBtn.textContent = "Đóng";
+    closeBtn.addEventListener("click", () => overlay.remove());
+
+    actions.appendChild(copyBtn);
+    actions.appendChild(closeBtn);
+    box.appendChild(actions);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    textarea.focus();
+    textarea.select();
+  }
+
   // resolveRancherTarget — quy về 1 trong 2 dạng payload gửi cho các endpoint "*-adhoc"/"*-for-db-env":
   // {rancherKey} nếu cluster env.rancherKey trỏ tới ĐÃ "Áp dụng" (đọc token qua .env ở server), hoặc
   // {rancherUrl, token, clusterId, insecureTLS} nếu cluster đó còn "isNew" (dùng thẳng dữ liệu đang gõ
@@ -1012,20 +1104,47 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       await fetchPodOptions(env);
     }
     const pods = Array.isArray(env._pods) ? env._pods : [];
-    if (!pods.length) {
-      setStatus(`Không có pod nào trong danh sách để dò cho "${env.name || "(chưa đặt tên)"}".`, "error");
-      return;
-    }
     const target = resolveRancherTarget(env);
     if (target && target.incomplete) {
       setStatus('Rancher này chưa lưu — nhập đủ Rancher URL, Token và chọn Cluster ID trước.', "error");
       return;
     }
+
+    const finalizeNoPod = (reason) => {
+      env._podAutoDetect = null;
+      renderDbEnvTable();
+      setStatus(`Không tìm thấy pod nào khả thi cho "${env.name || "(chưa đặt tên)"}".`, "error");
+      showK8sAdminPrompt(env, reason || "Không có pod nào khả thi.");
+    };
+
+    if (!pods.length) {
+      const fallback = await fetch(endpoints.testDbConnectionAdhoc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          connectionString: env.urlValue,
+          namespace: env.namespace,
+          projectId: env.projectId,
+          dbHost: env.dbHost,
+          dbPort: env.dbPort,
+          ...(target || {})
+        })
+      }).then((r) => r.json());
+      if (fallback.success !== false && fallback.data && fallback.data.success) {
+        setStatus(`Đã tạo pod tạm thời để kiểm tra kết nối cho "${env.name || "(chưa đặt tên)"}".`, "success");
+        return;
+      }
+      finalizeNoPod((fallback.data && fallback.data.message) || (fallback.message) || "Không có pod nào khả thi và không tạo được pod tạm thời.");
+      return;
+    }
+
     env._podAutoDetect = "loading";
     renderDbEnvTable();
     let found = null;
     try {
       for (const pod of pods) {
+        env._podAutoDetect = pod.value;
+        renderDbEnvTable();
         const body = await fetch(endpoints.testDbConnectionAdhoc, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1053,7 +1172,23 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     env._podAutoDetect = null;
     renderDbEnvTable();
     if (!found) {
-      setStatus(`Không tìm thấy pod nào trong danh sách kết nối được cho "${env.name || "(chưa đặt tên)"}".`, "error");
+      const fallback = await fetch(endpoints.testDbConnectionAdhoc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          connectionString: env.urlValue,
+          namespace: env.namespace,
+          projectId: env.projectId,
+          dbHost: env.dbHost,
+          dbPort: env.dbPort,
+          ...(target || {})
+        })
+      }).then((r) => r.json());
+      if (fallback.success !== false && fallback.data && fallback.data.success) {
+        setStatus(`Đã tạo pod tạm thời để kiểm tra kết nối cho "${env.name || "(chưa đặt tên)"}".`, "success");
+        return;
+      }
+      finalizeNoPod((fallback.data && fallback.data.message) || (fallback.message) || "Không có pod nào khả thi và không tạo được pod tạm thời.");
       return;
     }
     const confirmed = await confirmSimple({
@@ -1433,10 +1568,12 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         const autoDetectLink = document.createElement("a");
         autoDetectLink.href = "#";
         autoDetectLink.className = "sm-pod-autodetect-link";
-        const isDetecting = env._podAutoDetect === "loading";
-        autoDetectLink.textContent = isDetecting
-          ? "Đang dò pod khả dụng..."
-          : "Click vào đây để kiểm tra pod có sẵn khả dụng với kết nối này";
+        const isDetecting = env._podAutoDetect === "loading" || Boolean(env._podAutoDetect);
+        autoDetectLink.textContent = env._podAutoDetect && env._podAutoDetect !== "loading"
+          ? `Đang kiểm tra pod ${env._podAutoDetect}...`
+          : isDetecting
+            ? "Đang kiểm tra pod..."
+            : "Click vào đây để kiểm tra pod có sẵn khả dụng với kết nối này";
         if (isDetecting) autoDetectLink.classList.add("disabled");
         autoDetectLink.addEventListener("click", (e) => {
           e.preventDefault();
@@ -1943,6 +2080,10 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       isNew: true
     });
     renderGroupsTable();
+    requestAnimationFrame(() => {
+      const container = groupBody.querySelector(".sm-card:last-child");
+      focusFirstInputInList(container, 'input');
+    });
   });
 
   btnAddCluster.addEventListener("click", (e) => {
@@ -1959,6 +2100,10 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       isNew: true
     });
     renderRancherTable();
+    requestAnimationFrame(() => {
+      const container = rancherBody.querySelector(".sm-card:last-child");
+      focusFirstInputInList(container, 'input');
+    });
   });
 
   btnAddDbEnv.addEventListener("click", (e) => {
@@ -1973,6 +2118,10 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       isNew: true
     });
     renderDbEnvTable();
+    requestAnimationFrame(() => {
+      const container = dbEnvBody.querySelector(".sm-card:last-child");
+      focusFirstInputInList(container, 'input');
+    });
   });
 
   // k8sql cài đặt qua gói OS chuẩn (.deb/.AppImage/.msi/.dmg) — không có khái niệm "thư mục cài
@@ -2139,6 +2288,17 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       if (group.projectId && group.namespace) fetchGroupDeploymentOptions(group);
     });
   }
+
+  mountEl.querySelectorAll(".sm-section-toggle").forEach((toggle) => {
+    const key = toggle.closest(".sm-section")?.dataset.section;
+    const body = mountEl.querySelector(`#${toggle.dataset.target}`);
+    if (!key || !body) return;
+    setSectionExpanded(key, false);
+    toggle.addEventListener("click", () => {
+      const next = body.hidden;
+      setSectionExpanded(key, next);
+    });
+  });
 
   await load();
 

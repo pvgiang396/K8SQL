@@ -189,6 +189,43 @@
   margin-bottom: 0;
 }
 
+.sm-section-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sm-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.sm-section-toggle svg {
+  width: 14px;
+  height: 14px;
+  transition: transform .12s ease;
+}
+
+/* Đồng bộ chevron với .node-row .caret (Object Explorer, index.html) — xoay 90° khi mở thay vì
+   đổi ký tự ▸/▾. */
+.sm-section-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+.sm-section-toggle:hover {
+  color: var(--text);
+}
+
 a.sm-btn-add {
   display: inline-flex;
   align-items: center;
@@ -567,6 +604,46 @@ a.sm-btn-add-sub {
 }
 a.sm-btn-add-sub:hover {
   text-decoration: underline;
+}
+
+.sm-prompt-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.sm-prompt-box {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--sm-radius);
+  width: 520px;
+  max-width: calc(100vw - 32px);
+  padding: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.sm-prompt-box h4 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
+.sm-prompt-text {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  padding: 12px;
+  border-radius: var(--sm-radius);
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  box-sizing: border-box;
 }
 
 .sm-status {

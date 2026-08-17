@@ -12,28 +12,37 @@
       </label>
     </div>
 
-    <div class="sm-section">
+    <div class="sm-section" data-section="rancher">
       <div class="sm-section-header">
-        <div class="sm-block-label">Danh sách Rancher</div>
+        <div class="sm-section-title-wrap">
+          <button type="button" class="sm-section-toggle" data-target="smRancherTableBody" aria-expanded="false" aria-label="Mở danh sách Rancher"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
+          <div class="sm-block-label">Danh sách Rancher</div>
+        </div>
         <a href="#" id="smBtnAddCluster" class="sm-btn-add"><span class="sm-icon-plus">+</span>Thêm mới</a>
       </div>
-      <div class="sm-cardlist" id="smRancherTableBody"></div>
+      <div class="sm-cardlist" id="smRancherTableBody" hidden></div>
     </div>
 
-    <div class="sm-section">
+    <div class="sm-section" data-section="db-env">
       <div class="sm-section-header">
-        <div class="sm-block-label">Danh sách Connection String</div>
+        <div class="sm-section-title-wrap">
+          <button type="button" class="sm-section-toggle" data-target="smDbEnvTableBody" aria-expanded="false" aria-label="Mở danh sách Connection String"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
+          <div class="sm-block-label">Danh sách Connection String</div>
+        </div>
         <a href="#" id="smBtnAddDbEnv" class="sm-btn-add"><span class="sm-icon-plus">+</span>Thêm mới</a>
       </div>
-      <div class="sm-cardlist" id="smDbEnvTableBody"></div>
+      <div class="sm-cardlist" id="smDbEnvTableBody" hidden></div>
     </div>
 
-    <div class="sm-section">
+    <div class="sm-section" data-section="namespace-group">
       <div class="sm-section-header">
-        <div class="sm-block-label">Danh sách Nhóm Namespace (domain → deployment)</div>
+        <div class="sm-section-title-wrap">
+          <button type="button" class="sm-section-toggle" data-target="smGroupTableBody" aria-expanded="false" aria-label="Mở danh sách Nhóm Namespace"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
+          <div class="sm-block-label">Danh sách Nhóm Namespace (domain → deployment)</div>
+        </div>
         <a href="#" id="smBtnAddGroup" class="sm-btn-add"><span class="sm-icon-plus">+</span>Thêm mới</a>
       </div>
-      <div class="sm-cardlist" id="smGroupTableBody"></div>
+      <div class="sm-cardlist" id="smGroupTableBody" hidden></div>
     </div>
 
     <div class="sm-status" id="smStatus"></div>

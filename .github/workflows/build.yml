@@ -25,6 +25,9 @@ jobs:
             package-lock.json
             server/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli@2
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -51,6 +54,9 @@ jobs:
             package-lock.json
             server/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli@2
       - name: Install dependencies
         shell: bash
         run: |
@@ -76,6 +82,9 @@ jobs:
             package-lock.json
             server/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli@2
       - name: Install dependencies
         run: |
           npm ci

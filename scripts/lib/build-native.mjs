@@ -54,8 +54,15 @@ export async function buildNative({ platform = process.platform } = {}) {
   if (platform !== "win32") fs.chmodSync(seaBinaryDest, 0o755);
 
   const bundles = BUNDLES_BY_PLATFORM[platform];
-  console.log(`\n[build-native] === Bước 3/4: cargo tauri build --bundles ${bundles} ===`);
-  execFileSync("cargo", ["tauri", "build", "--bundles", bundles], {
+  console.log(`\n[build-native] === Bước 3/4: cargo tauri build --target ${triple} --bundles ${bundles} ===`);
+  // --target tường minh (thay vì để cargo-tauri tự đoán "triple hiện tại") — bug thật đã gặp trên
+  // GitHub Actions macos-15 (Apple Silicon/aarch64): binary cargo-tauri cài qua taiki-e/install-
+  // action là bản x86_64 (chạy qua Rosetta), tự nhận diện triple theo kiến trúc BIÊN DỊCH CỦA CHÍNH
+  // NÓ (x86_64-apple-darwin) thay vì host thật (aarch64) → bundler tìm nhầm externalBin
+  // "k8sql-server-x86_64-apple-darwin" trong khi ta chỉ copy bản đúng triple thật (aarch64). Truyền
+  // --target ép cargo-tauri dùng đúng triple ta đã dùng để đặt tên externalBin, không phụ thuộc suy
+  // đoán nội bộ của binary cargo-tauri.
+  execFileSync("cargo", ["tauri", "build", "--target", triple, "--bundles", bundles], {
     cwd: SRC_TAURI_DIR,
     stdio: "inherit",
     env,
@@ -66,7 +73,9 @@ export async function buildNative({ platform = process.platform } = {}) {
   const distDir = path.join(REPO_ROOT, "dist", distSubdir);
   fs.mkdirSync(distDir, { recursive: true });
 
-  const bundleRoot = path.join(SRC_TAURI_DIR, "target", "release", "bundle");
+  // --target tường minh (xem comment ở Bước 3/4) đổi output sang target/<triple>/release/bundle
+  // thay vì target/release/bundle mặc định khi không truyền --target.
+  const bundleRoot = path.join(SRC_TAURI_DIR, "target", triple, "release", "bundle");
   const copied = [];
   for (const kind of fs.existsSync(bundleRoot) ? fs.readdirSync(bundleRoot) : []) {
     const kindDir = path.join(bundleRoot, kind);

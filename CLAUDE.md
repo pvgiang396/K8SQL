@@ -659,6 +659,49 @@ cần tự truy vấn bảng `r3svc.account` thật trên DB Huế để xác mi
 Settings API (đặt `allow_write:0` chủ động, đúng nguyên tắc chỉ đọc khi điều tra). Không phải lỗi/rò
 rỉ cấu hình — an toàn để giữ lại (chỉ đọc) hoặc user tự xoá qua Settings nếu không còn cần.
 
+## Đọc thẳng SQLite lúc runtime (2026-08-18) — bỏ hẳn file `config/*.json`/`.env` trung gian
+
+**Trước phiên này**: SQLite+keychain chỉ để ghi bền vững — mọi service đọc DB/Rancher thật
+(`rancher.client.js`/`db-environment.service.js`/`kube.service.js`/`db-config.service.js`/
+`settings.service.js`) đọc lại qua `config/rancher-clusters.json`/`db-environments.json`/
+`namespaces.json`/`config/kubeconfigs/*.yaml` + `.env` do `envShim.materializeLegacyConfig()` ghi
+ra đĩa mỗi khi SQLite đổi + lúc khởi động — mọi nhắc tới "materialize"/2 file JSON/`.env` ở các mục
+lịch sử phía trên (Phase 3, "Fix export/import...") mô tả đúng trạng thái TẠI THỜI ĐIỂM đó, không
+còn đúng với code hiện tại.
+
+**Từ phiên này**: các service trên đọc thẳng SQLite qua `settingsRepo.listRancherClusters()`/
+`listDbEnvironments()`/`listNamespaceGroups()` (`node:sqlite` đồng bộ, không cần lớp file trung
+gian) — **không còn file `config/*.json`/`.env` nào được ghi ra đĩa nữa**. `kube.service.js`'s
+`createKubeconfigContext()` đọc kubeconfig thẳng từ keychain (`kubeconfigSecretRef`) qua
+`kc.loadFromString()` thay vì `loadFromFile()` đọc `config/kubeconfigs/*.yaml` — loại bỏ nốt file
+trung gian cuối cùng. `envShim.materializeLegacyConfig()` đổi tên thành `refreshProcessEnvSecrets()`
+— chỉ còn populate `process.env[tokenEnvVar/connectionStringEnvVar]` từ keychain (in-memory, không
+phải file), gọi lúc khởi động + sau mọi route ghi secret, y hệt lịch cũ.
+
+`provision.service.js::addGroup()` (route `/provision/add-group`, k8sctl-compat) ghi qua
+`settingsRepo.upsertNamespaceGroups()` thay vì `fs.writeFile()` — provider `kubeconfig` qua route
+này (chỉ nhận `configPath`, không có nội dung để lưu keychain) giờ trả lỗi hướng dẫn dùng UI Settings
+thay vì hỗ trợ nửa vời; provider `rancher` hoạt động đầy đủ.
+
+**Verify đã làm**: dev-server + fake native-bridge (2 sidecar riêng, cùng kỹ thuật Phase 3) — CRUD
+rancher-cluster/db-environment/namespace-group, reveal secret, mongo-driver-downgrade write path
+(`settingsRepo.setDbEnvironmentMongoDriver()`, ghi trực tiếp SQLite thay `fs.writeFileSync`),
+restart-survival (`pkill -9` + relaunch, dữ liệu/secret đọc đúng lại từ SQLite). Phát hiện + fix 1
+bug thật lúc verify: xoá `rancher_clusters` TRƯỚC `namespace_groups`/`db_environments` còn tham
+chiếu ném `FOREIGN KEY constraint failed` — SQLite ở đây **CÓ enforce FK** (xác nhận thật, không
+phải giả định) — `clearConfig.ts` (mục dưới) phải xoá đúng thứ tự. Đã rebuild `.deb` + cài lại trên
+máy dev thật, xoá tay `config/*.json`/`.env` cũ còn sót từ bản trước, xác nhận dữ liệu THẬT (3
+connection, 3 Rancher cluster) đọc đúng qua API + 1 test connection Mongo thật chạy đúng.
+
+**Tính năng mới đi kèm — nút "Làm sạch cấu hình" (🧨, cạnh ⚙️/⬇️ trong header)**: xoá SẠCH toàn bộ
+Rancher cluster/Connection String/Nhóm namespace + secret keychain, route `POST
+/internal/clear-config` (`src/clearConfig.ts`) — tận dụng `settingsRepo.upsertX([])` (replace-all
+rỗng, tự xoá secret cho row biến mất), KHÔNG đụng `app_settings.schemaVersion`. Dùng khi user muốn
+reset sạch để test lại import config từ đầu (xem thắc mắc "import không union" — thường do máy đó
+còn dữ liệu test cũ từ lần cài trước, không phải bug `importConfig()`). Xác nhận qua dialog
+`confirmDeleteWithKey()` (gõ đúng chuỗi, export thêm từ `settings-modal.js` để `index.html` tái
+dùng) — không dùng `window.confirm()` OK/Cancel vì đây là thao tác không hoàn tác.
+
 ## AI dùng k8sql
 
 Kiểm tra `curl -s -m 2 http://127.0.0.1:4210/health`. Nếu không phản hồi:

@@ -1,6 +1,3 @@
-const fs = require("fs/promises");
-const path = require("path");
-const { getBaseDir } = require("../utils/base-dir");
 // Dùng fetch CỦA CHÍNH package "undici" (không phải fetch built-in Node.js) khi truyền dispatcher
 // là 1 Agent tạo từ package này — 2 undici khác major (vd Node.js bundle undici 7.x nhưng
 // package.json pin "undici" 8.x) đổi tên method nội bộ của handler (onConnect/onHeaders/onData →
@@ -8,8 +5,7 @@ const { getBaseDir } = require("../utils/base-dir");
 // "invalid onRequestStart method" (bug thật đã gặp — xem k8sctl/CLAUDE.md).
 const { fetch: undiciFetch, Agent } = require("undici");
 const { AppError } = require("../utils/error");
-
-const rancherClustersConfigPath = path.resolve(getBaseDir(), "config", "rancher-clusters.json");
+const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
 
 function getUndiciAgent(insecureTLS) {
   if (!insecureTLS) {
@@ -18,20 +14,11 @@ function getUndiciAgent(insecureTLS) {
   return new Agent({ connect: { rejectUnauthorized: false } });
 }
 
-async function readRancherClustersConfig() {
-  const raw = await fs.readFile(rancherClustersConfigPath, "utf8");
-  const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed)) {
-    throw new AppError("config/rancher-clusters.json must be an array.", 500);
-  }
-  return parsed;
-}
-
 async function resolveRancherCluster(rancherClusterName) {
-  const clusters = await readRancherClustersConfig();
+  const clusters = settingsRepo.listRancherClusters();
   const cluster = clusters.find((item) => item.name === rancherClusterName);
   if (!cluster) {
-    throw new AppError(`Rancher cluster not found in rancher-clusters.json: ${rancherClusterName}`, 500);
+    throw new AppError(`Rancher cluster not found: ${rancherClusterName}`, 500);
   }
 
   const token = process.env[cluster.tokenEnvVar];

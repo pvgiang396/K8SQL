@@ -1,31 +1,13 @@
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
 const { AppError } = require("../utils/error");
-const { getBaseDir } = require("../utils/base-dir");
+const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
 
-const CONFIG_PATH = path.join(getBaseDir(), "config", "db-environments.json");
-
+// Đọc thẳng SQLite qua settingsRepo (KHÔNG còn qua config/db-environments.json, xem
+// k8sql/CLAUDE.md mục "Đọc thẳng SQLite lúc runtime") — bảng luôn tồn tại (tạo lúc getDb() init)
+// nên rỗng là trạng thái hợp lệ (chưa khai báo gì), không throw như khi file thiếu/hỏng trước đây.
 function loadEnvironments() {
-  let raw;
-  try {
-    raw = fs.readFileSync(CONFIG_PATH, "utf8");
-  } catch (error) {
-    throw new AppError(`Không đọc được config/db-environments.json: ${error.message}`, 500);
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new AppError(`config/db-environments.json không phải JSON hợp lệ: ${error.message}`, 500);
-  }
-
-  if (!Array.isArray(parsed)) {
-    throw new AppError("config/db-environments.json phải là 1 mảng.", 500);
-  }
-  return parsed;
+  return settingsRepo.listDbEnvironments();
 }
 
 // Ghi thẳng field "mongoDriver" ("modern"/"legacy") vào đúng entry theo name — dùng khi
@@ -33,14 +15,12 @@ function loadEnvironments() {
 // yêu cầu) và fallback sang driver mongodb@3.x, để lần kết nối sau không cần thử lại driver mới
 // trước (tránh timeout serverSelectionTimeoutMS mỗi lần). Không dùng saveDbEnvironments() ở
 // settings.service.js vì hàm đó ghi ĐÈ TOÀN BỘ mảng (dùng cho UI Settings) — ở đây chỉ cần sửa 1
-// field của đúng 1 entry, giữ nguyên mọi entry khác byte-for-byte không cần thiết.
+// field của đúng 1 entry, ghi trực tiếp qua settingsRepo.setDbEnvironmentMongoDriver().
 function setMongoDriverPreference(name, mongoDriver) {
   const environments = loadEnvironments();
-  const index = environments.findIndex((item) => item.name === name);
-  if (index === -1) return;
-  if (environments[index].mongoDriver === mongoDriver) return;
-  environments[index] = { ...environments[index], mongoDriver };
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(environments, null, 2) + "\n", "utf8");
+  const found = environments.find((item) => item.name === name);
+  if (!found || found.mongoDriver === mongoDriver) return;
+  settingsRepo.setDbEnvironmentMongoDriver(name, mongoDriver);
 }
 
 function getEnvironmentOrThrow(name) {
@@ -48,9 +28,7 @@ function getEnvironmentOrThrow(name) {
   const env = environments.find((item) => item.name === name);
   if (!env) {
     throw new AppError(
-      `Environment "${name}" không tồn tại trong config/db-environments.json. Hợp lệ: ${environments
-        .map((item) => item.name)
-        .join(", ")}`,
+      `Environment "${name}" không tồn tại. Hợp lệ: ${environments.map((item) => item.name).join(", ")}`,
       404
     );
   }

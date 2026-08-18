@@ -8,8 +8,7 @@ const rancherClient = require("./rancher.client");
 const rancherProvision = require("./providers/rancher/provision");
 const kubeconfigProvision = require("./providers/kubeconfig/provision");
 const { getBaseDir } = require("../utils/base-dir");
-
-const namespacesConfigPath = path.resolve(getBaseDir(), "config", "namespaces.json");
+const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
 
 // ─── applyYaml ────────────────────────────────────────────────────────────────
 // Tạo context trực tiếp từ tham số đầu vào (không qua domain lookup) vì site
@@ -81,9 +80,9 @@ async function applyYaml({ rancherCluster, configPath, namespace, yaml: yamlCont
 }
 
 // ─── addGroup ─────────────────────────────────────────────────────────────────
-// Thêm 1 entry mới vào config/namespaces.json và lưu lại file.
-// Sau khi add, mọi endpoint dùng domain lookup (/resolve, /diagnose, --deploy...)
-// hoạt động ngay mà không cần restart k8sctl.
+// Route k8sctl-compat cũ, giờ ghi thẳng SQLite qua settingsRepo.upsertNamespaceGroups() (thay
+// config/namespaces.json trước đây — đã bỏ file trung gian, xem k8sql/CLAUDE.md). Sau khi add, mọi
+// endpoint dùng domain lookup (/resolve, /diagnose, --deploy...) hoạt động ngay mà không cần restart.
 
 async function addGroup({ name, provider, rancherCluster, projectId, configPath, namespace, domains, services }) {
   if (!name) throw new AppError("Thiếu tham số name.", 400);
@@ -92,14 +91,9 @@ async function addGroup({ name, provider, rancherCluster, projectId, configPath,
     throw new AppError("Tham số domains phải là mảng không rỗng.", 400);
   }
 
-  const raw = await fs.readFile(namespacesConfigPath, "utf8");
-  const groups = JSON.parse(raw);
-  if (!Array.isArray(groups)) {
-    throw new AppError("config/namespaces.json phải là mảng.", 500);
-  }
-
-  if (groups.some((g) => g.name === name)) {
-    throw new AppError(`Nhóm "${name}" đã tồn tại trong namespaces.json.`, 409);
+  const existingGroups = settingsRepo.listNamespaceGroups();
+  if (existingGroups.some((g) => g.name === name)) {
+    throw new AppError(`Nhóm "${name}" đã tồn tại.`, 409);
   }
 
   const entry = { name, provider: provider || "rancher", namespace, domains };
@@ -110,19 +104,26 @@ async function addGroup({ name, provider, rancherCluster, projectId, configPath,
     entry.rancherCluster = rancherCluster;
     entry.projectId = projectId;
   } else {
-    if (!configPath) throw new AppError("Thiếu configPath cho provider kubeconfig.", 400);
-    entry.configPath = configPath;
+    // provider "kubeconfig": route k8sctl-compat này chỉ nhận 1 configPath (đường dẫn file) từ
+    // caller, không có nội dung kubeconfig thật để đẩy vào keychain (kubeconfig_secret_ref) —
+    // đọc file rồi tự ghi secret là mở rộng tính năng ngoài phạm vi "chuyển nguồn đọc sang SQLite".
+    // Yêu cầu dùng UI Settings (/settings/namespace-groups) cho provider này thay vì hỗ trợ nửa vời.
+    throw new AppError(
+      'provider "kubeconfig" chưa hỗ trợ qua /provision/add-group — dùng UI Settings (Nhóm namespace) để khai báo, route này chỉ hỗ trợ provider "rancher".',
+      400
+    );
   }
 
   if (services && typeof services === "object") {
     entry.services = services;
   }
 
-  groups.push(entry);
-  await fs.writeFile(namespacesConfigPath, JSON.stringify(groups, null, 2) + "\n", "utf8");
+  // upsertNamespaceGroups là replace-all-theo-tên — phải truyền kèm existingGroups để không mất
+  // các nhóm khác đã lưu.
+  await settingsRepo.upsertNamespaceGroups([...existingGroups, entry]);
 
-  logOperation({ clusterName: rancherCluster || configPath, namespace, resource: "group", operation: "add-group", success: true });
-  return { message: `Nhóm "${name}" đã được thêm vào namespaces.json.`, entry };
+  logOperation({ clusterName: rancherCluster, namespace, resource: "group", operation: "add-group", success: true });
+  return { message: `Nhóm "${name}" đã được thêm.`, entry };
 }
 
 // ─── readiness ────────────────────────────────────────────────────────────────

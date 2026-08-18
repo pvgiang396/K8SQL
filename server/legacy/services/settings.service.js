@@ -1,32 +1,29 @@
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
 const { AppError } = require("../utils/error");
 const { logOperation } = require("../utils/logger");
 const { browseDirectoryNative } = require("../scripts/lib/browse-directory");
-const { readEnvFile, dbEnvVarNames } = require("../scripts/lib/config-info");
 const rancherClient = require("./rancher.client");
 const { getBaseDir } = require("../utils/base-dir");
 const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
-const { materializeLegacyConfig } = require("../../src/secrets/envShim.ts");
+const { refreshProcessEnvSecrets } = require("../../src/secrets/envShim.ts");
 
 const ROOT_DIR = getBaseDir();
-const RANCHER_CLUSTERS_PATH = path.join(ROOT_DIR, "config", "rancher-clusters.json");
-const DB_ENVIRONMENTS_PATH = path.join(ROOT_DIR, "config", "db-environments.json");
 
 // Trả ĐÚNG CÙNG 1 bộ thông tin mà wizard cài đặt gốc (scripts/wizard.js's /current-config) hiển
 // thị — modal "Cấu hình" trong GUI đang chạy phải giống hệt màn hình lúc chạy quickstart, không chỉ
 // mỗi thư mục cài đặt. KHÔNG trả giá trị thật của token/connection string qua API (chỉ biết đã có
 // hay chưa) — cùng lý do bảo mật đã áp dụng cho wizard.js.
 function getCurrentInstallInfo() {
-  const env = readEnvFile(ROOT_DIR);
   return {
     installDir: ROOT_DIR,
-    port: env.PORT || "3210",
-    rancherOperatorTokenSet: Boolean(env.R3_RANCHER_OPERATOR_TOKEN),
-    idgPlatformRancherTokenSet: Boolean(env.IDG_PLATFORM_RANCHER_TOKEN),
-    dbEnvVars: dbEnvVarNames(ROOT_DIR).map((name) => ({ name, hasValue: Boolean(env[name]) }))
+    port: process.env.PORT || "3210",
+    rancherOperatorTokenSet: Boolean(process.env.R3_RANCHER_OPERATOR_TOKEN),
+    idgPlatformRancherTokenSet: Boolean(process.env.IDG_PLATFORM_RANCHER_TOKEN),
+    dbEnvVars: settingsRepo.listDbEnvironments().map((e) => ({
+      name: e.connectionStringEnvVar,
+      hasValue: Boolean(process.env[e.connectionStringEnvVar])
+    }))
   };
 }
 
@@ -38,34 +35,25 @@ function getCurrentInstallInfo() {
 // service" để đọc giá trị mới, chỉ cần ghi xong + materialize).
 async function applySettings({ values }) {
   await settingsRepo.applySecretValues(values || {});
-  await materializeLegacyConfig(ROOT_DIR);
+  await refreshProcessEnvSecrets();
 
   logOperation({ resource: "settings", operation: "apply", success: true });
 
   return { message: "Đã lưu cấu hình." };
 }
 
-function readJsonArray(filePath) {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-// Không trả token thật qua API — chỉ metadata + hasValue (đã có giá trị trong .env hay chưa),
-// cùng nguyên tắc bảo mật đã áp dụng cho dbEnvVars.
+// Không trả token thật qua API — chỉ metadata + hasValue (đã có giá trị trong process.env hay
+// chưa — populate bởi refreshProcessEnvSecrets(), xem envShim.ts), cùng nguyên tắc bảo mật đã áp
+// dụng cho dbEnvVars.
 function listRancherClusters() {
-  const env = readEnvFile(ROOT_DIR);
-  return readJsonArray(RANCHER_CLUSTERS_PATH).map((cluster) => ({
+  return settingsRepo.listRancherClusters().map((cluster) => ({
     name: cluster.name,
     rancherUrl: cluster.rancherUrl,
     clusterId: cluster.clusterId,
     insecureTLS: Boolean(cluster.insecureTLS),
     tokenEnvVar: cluster.tokenEnvVar,
     description: cluster.description || "",
-    hasValue: Boolean(env[cluster.tokenEnvVar])
+    hasValue: Boolean(process.env[cluster.tokenEnvVar])
   }));
 }
 
@@ -98,15 +86,14 @@ async function saveRancherClusters(clusters) {
   }
 
   await settingsRepo.upsertRancherClusters(clusters);
-  await materializeLegacyConfig(ROOT_DIR);
+  await refreshProcessEnvSecrets();
 
   return { message: "Đã lưu danh sách Rancher cluster." };
 }
 
 // Không trả connectionStringEnvVar thật/secret — chỉ metadata + hasValue.
 function listDbEnvironments() {
-  const env = readEnvFile(ROOT_DIR);
-  return readJsonArray(DB_ENVIRONMENTS_PATH).map((item) => ({
+  return settingsRepo.listDbEnvironments().map((item) => ({
     name: item.name,
     description: item.description,
     connectionStringEnvVar: item.connectionStringEnvVar,
@@ -120,7 +107,7 @@ function listDbEnvironments() {
     allowWrite: Boolean(item.allowWrite),
     engine: item.engine,
     existingPodName: item.existingPodName,
-    hasValue: Boolean(env[item.connectionStringEnvVar])
+    hasValue: Boolean(process.env[item.connectionStringEnvVar])
   }));
 }
 
@@ -161,7 +148,7 @@ async function saveDbEnvironments(environments) {
   }
 
   await settingsRepo.upsertDbEnvironments(environments);
-  await materializeLegacyConfig(ROOT_DIR);
+  await refreshProcessEnvSecrets();
 
   return { message: "Đã lưu danh sách connection string." };
 }
@@ -173,22 +160,20 @@ async function saveDbEnvironments(environments) {
 // (xem CLAUDE.md mục "Giới hạn cần biết"), không có tầng auth nào khác — đây LÀ tầng bảo vệ duy
 // nhất, không expose thêm được nữa dù muốn.
 function revealRancherToken(name) {
-  const cluster = readJsonArray(RANCHER_CLUSTERS_PATH).find((c) => c.name === name);
+  const cluster = settingsRepo.listRancherClusters().find((c) => c.name === name);
   if (!cluster) {
     throw new AppError(`Không tìm thấy Rancher "${name}".`, 404);
   }
-  const env = readEnvFile(ROOT_DIR);
   logOperation({ resource: "settings", operation: "reveal-rancher-token", clusterName: name, success: true });
-  return { value: env[cluster.tokenEnvVar] || "" };
+  return { value: process.env[cluster.tokenEnvVar] || "" };
 }
 
 function revealDbEnvironmentValue(name) {
-  const item = readJsonArray(DB_ENVIRONMENTS_PATH).find((i) => i.name === name);
+  const item = settingsRepo.listDbEnvironments().find((i) => i.name === name);
   if (!item) {
     throw new AppError(`Không tìm thấy connection "${name}".`, 404);
   }
-  const env = readEnvFile(ROOT_DIR);
-  let value = env[item.connectionStringEnvVar] || "";
+  let value = process.env[item.connectionStringEnvVar] || "";
   // Mode k8s-tunnel lưu placeholder "__HOST__" thay cho host:port thật trong .env (xem
   // toTunnelConnectionTemplate() ở settings-modal.js) — chỉ có ý nghĩa lúc tunnel đang mở, không
   // phải "giá trị thật" user muốn xem khi bấm icon con mắt (bug thật đã báo: hiện nguyên
@@ -319,7 +304,7 @@ async function saveNamespaceGroups(groups) {
   }
 
   await settingsRepo.upsertNamespaceGroups(groups);
-  await materializeLegacyConfig(ROOT_DIR);
+  await refreshProcessEnvSecrets();
 
   return { message: "Đã lưu danh sách nhóm namespace." };
 }

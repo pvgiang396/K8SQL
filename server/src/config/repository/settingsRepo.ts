@@ -1,7 +1,10 @@
-// CRUD cho rancher_clusters/db_environments dùng bởi legacy/services/settings.service.js — thay
-// cho ghi trực tiếp config/*.json (bị envShim.materializeLegacyConfig() ghi đè mất mỗi lần sidecar
-// restart, xem k8sql/CLAUDE.md mục "Việc tồn đọng Phase 3"). UI gửi TOÀN BỘ mảng mong muốn mỗi lần
-// "Áp dụng" (giữ đúng ngữ nghĩa gốc k8sctl: thêm/sửa/xoá cùng lúc qua diff với dữ liệu đã lưu).
+// CRUD + đọc cho rancher_clusters/db_environments/namespace_groups — dùng bởi cả settings.service.js
+// (ghi/liệt kê cho Settings UI) LẪN các service legacy khác đọc thẳng để kết nối thật
+// (rancher.client.js/db-environment.service.js/kube.service.js/db-config.service.js — xem
+// k8sql/CLAUDE.md mục "Đọc thẳng SQLite lúc runtime", KHÔNG còn qua config/*.json trung gian).
+// upsert* nhận TOÀN BỘ mảng mong muốn mỗi lần gọi (giữ đúng ngữ nghĩa gốc k8sctl: thêm/sửa/xoá cùng
+// lúc qua diff với dữ liệu đã lưu — gọi với mảng RỖNG xoá sạch, dùng cho nút "Làm sạch cấu hình").
+// list* chỉ đọc, không diff/xoá gì.
 
 const { getDb } = require("../db.ts");
 const keychainClient = require("../../secrets/keychainClient.ts");
@@ -28,6 +31,34 @@ interface NamespaceGroupInput {
   namespace: string;
   domains: NamespaceGroupDomainInput[];
   services?: Record<string, unknown>;
+  db?: Record<string, unknown>;
+  kubeconfigSecretRef?: string;
+}
+
+interface RancherClusterJson {
+  name: string;
+  rancherUrl: string;
+  clusterId: string;
+  tokenEnvVar: string;
+  insecureTLS: boolean;
+  description: string;
+}
+
+interface DbEnvironmentJson {
+  name: string;
+  description: string;
+  connectionStringEnvVar: string;
+  mode?: string;
+  domain?: string;
+  rancherKey?: string;
+  namespace?: string;
+  dbHost?: string;
+  dbPort?: number;
+  projectId?: string;
+  existingPodName?: string;
+  allowWrite: boolean;
+  engine?: string;
+  mongoDriver?: string;
 }
 
 interface DbEnvironmentInput {
@@ -211,7 +242,8 @@ function listNamespaceGroups(): NamespaceGroupInput[] {
   const db = getDb();
   const groups = db
     .prepare(
-      `SELECT ng.id, ng.provider, ng.name, ng.namespace, ng.project_id, ng.services_json, rc.name AS rancher_cluster_name
+      `SELECT ng.id, ng.provider, ng.name, ng.namespace, ng.project_id, ng.services_json, ng.db_json,
+              ng.kubeconfig_secret_ref, rc.name AS rancher_cluster_name
        FROM namespace_groups ng LEFT JOIN rancher_clusters rc ON rc.id = ng.rancher_cluster_id`
     )
     .all() as {
@@ -221,6 +253,8 @@ function listNamespaceGroups(): NamespaceGroupInput[] {
     namespace: string;
     project_id: string | null;
     services_json: string;
+    db_json: string | null;
+    kubeconfig_secret_ref: string | null;
     rancher_cluster_name: string | null;
   }[];
 
@@ -236,8 +270,82 @@ function listNamespaceGroups(): NamespaceGroupInput[] {
       namespace: g.namespace,
       domains: domains.map((d) => ({ url: d.url, env: d.env || undefined })),
       services: JSON.parse(g.services_json),
+      db: g.db_json ? JSON.parse(g.db_json) : undefined,
+      kubeconfigSecretRef: g.kubeconfig_secret_ref || undefined,
     };
   });
+}
+
+// listRancherClusters/listDbEnvironments — đọc thẳng SQLite thay cho config/rancher-clusters.json/
+// db-environments.json trước đây (đã bỏ file trung gian, xem k8sql/CLAUDE.md). Shape output GIỮ Y
+// HỆT shape 2 file JSON đó từng có, để mọi call site trong legacy/services/*.js không cần đổi gì
+// ngoài chỗ gọi hàm (rancher.client.js/db-environment.service.js/db-config.service.js/
+// settings.service.js). node:sqlite là đồng bộ nên các hàm này KHÔNG async.
+function listRancherClusters(): RancherClusterJson[] {
+  const db = getDb();
+  const rows = db
+    .prepare("SELECT name, rancher_url, cluster_id, insecure_tls, description FROM rancher_clusters")
+    .all() as { name: string; rancher_url: string; cluster_id: string; insecure_tls: number; description: string | null }[];
+  return rows.map((c) => ({
+    name: c.name,
+    rancherUrl: c.rancher_url,
+    clusterId: c.cluster_id,
+    tokenEnvVar: deriveTokenEnvVar(c.name),
+    insecureTLS: Boolean(c.insecure_tls),
+    description: c.description || "",
+  }));
+}
+
+function listDbEnvironments(): DbEnvironmentJson[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT e.name, e.description, e.mode, e.domain, e.namespace, e.db_host, e.db_port, e.project_id,
+              e.existing_pod_name, e.allow_write, e.engine, e.mongo_driver, rc.name AS rancher_cluster_name
+       FROM db_environments e LEFT JOIN rancher_clusters rc ON rc.id = e.rancher_cluster_id`
+    )
+    .all() as {
+    name: string;
+    description: string | null;
+    mode: string | null;
+    domain: string | null;
+    namespace: string | null;
+    db_host: string | null;
+    db_port: number | null;
+    project_id: string | null;
+    existing_pod_name: string | null;
+    allow_write: number;
+    engine: string | null;
+    mongo_driver: string | null;
+    rancher_cluster_name: string | null;
+  }[];
+  return rows.map((e) => ({
+    name: e.name,
+    description: e.description || "",
+    connectionStringEnvVar: deriveConnStringEnvVar(e.name),
+    mode: e.mode || undefined,
+    domain: e.domain || undefined,
+    rancherKey: e.rancher_cluster_name || undefined,
+    namespace: e.namespace || undefined,
+    dbHost: e.db_host || undefined,
+    dbPort: e.db_port || undefined,
+    projectId: e.project_id || undefined,
+    existingPodName: e.existing_pod_name || undefined,
+    allowWrite: Boolean(e.allow_write),
+    engine: e.engine || undefined,
+    mongoDriver: e.mongo_driver || undefined,
+  }));
+}
+
+// setDbEnvironmentMongoDriver — ghi trực tiếp, KHÔNG qua upsertDbEnvironments() (replace-all) vì
+// đây là 1 field runtime cache (mongo/query.js tự downgrade driver khi gặp server Mongo cũ), không
+// phải thay đổi user chủ động qua Settings UI — không cần validate/diff toàn bộ danh sách.
+function setDbEnvironmentMongoDriver(name: string, mongoDriver: string): void {
+  const db = getDb();
+  db.prepare("UPDATE db_environments SET mongo_driver = ?, updated_at = datetime('now') WHERE name = ?").run(
+    mongoDriver,
+    name
+  );
 }
 
 // applySettings({values}) gửi lên map {<tokenEnvVar hoặc connectionStringEnvVar đã derive>: <secret
@@ -275,4 +383,7 @@ module.exports = {
   applySecretValues,
   upsertNamespaceGroups,
   listNamespaceGroups,
+  listRancherClusters,
+  listDbEnvironments,
+  setDbEnvironmentMongoDriver,
 };

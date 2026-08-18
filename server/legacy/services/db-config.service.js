@@ -1,28 +1,13 @@
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
 const { AppError } = require("../utils/error");
 const { loadEnvironments, listEnvironmentsPublic } = require("./db-environment.service");
-const { getBaseDir } = require("../utils/base-dir");
 const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
 const {
-  materializeLegacyConfig,
+  refreshProcessEnvSecrets,
   deriveTokenEnvVar,
   deriveConnStringEnvVar
 } = require("../../src/secrets/envShim.ts");
-
-const ROOT_DIR = getBaseDir();
-const RANCHER_CLUSTERS_PATH = path.join(ROOT_DIR, "config", "rancher-clusters.json");
-
-function readJsonArray(filePath) {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
 
 // LƯU Ý BẢO MẬT: exportConfig()/importConfig() là bề mặt API DUY NHẤT trả/nhận credential Postgres
 // THẬT — mọi endpoint /sql/* khác (đặc biệt listEnvironmentsPublic()) cố tình không bao giờ lộ
@@ -36,7 +21,7 @@ function readJsonArray(filePath) {
 // file thật).
 function exportConfig() {
   const environments = loadEnvironments();
-  const rancherClusters = readJsonArray(RANCHER_CLUSTERS_PATH);
+  const rancherClusters = settingsRepo.listRancherClusters();
   return {
     environments: environments.map((env) => ({
       ...env,
@@ -50,11 +35,8 @@ function exportConfig() {
 }
 
 // environments/rancherClusters: mỗi entry tự chứa secret thật ("connectionString"/"token", xem
-// exportConfig()) — ghi qua settingsRepo (SQLite + keychain) rồi materializeLegacyConfig() thay vì
-// fs.writeFileSync() thẳng vào config/*.json/.env như trước 2026-08-14: ghi trực tiếp file bị
-// envShim.materializeLegacyConfig() (chạy lại mỗi lần sidecar khởi động/mỗi lần Settings lưu gì
-// khác) ĐÈ MẤT ngay lần kế tiếp vì SQLite — nguồn sự thật thật sự — chưa từng biết tới dữ liệu vừa
-// import (cùng loại bug đã gặp + fix cho namespace_groups, xem settingsRepo.ts đầu file).
+// exportConfig()) — ghi qua settingsRepo (SQLite + keychain) rồi refreshProcessEnvSecrets() để
+// process.env đọc được ngay (không còn ghi file .json/.env trung gian nào nữa, xem envShim.ts).
 //
 // Merge theo "name" (ghi đè entry trùng tên, GIỮ NGUYÊN entry cũ không có trong file import) — cố ý
 // KHÁC ngữ nghĩa "replace-all" của settingsRepo.upsertRancherClusters()/upsertDbEnvironments() (dùng
@@ -79,7 +61,7 @@ async function importConfig({ environments, rancherClusters }) {
 
   const secrets = {};
 
-  const currentClusters = readJsonArray(RANCHER_CLUSTERS_PATH);
+  const currentClusters = settingsRepo.listRancherClusters();
   const mergedClusters = [...currentClusters];
   const rancherClustersImported = [];
   for (const incoming of rancherClusters || []) {
@@ -120,7 +102,7 @@ async function importConfig({ environments, rancherClusters }) {
   if (Object.keys(secrets).length > 0) {
     await settingsRepo.applySecretValues(secrets);
   }
-  await materializeLegacyConfig(ROOT_DIR);
+  await refreshProcessEnvSecrets();
 
   return {
     environments: listEnvironmentsPublic(),

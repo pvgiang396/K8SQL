@@ -1,10 +1,8 @@
-const fs = require("fs/promises");
-const path = require("path");
 const { AppError } = require("../utils/error");
 const rancherClient = require("./rancher.client");
-const { getBaseDir } = require("../utils/base-dir");
+const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
+const keychainClient = require("../../src/secrets/keychainClient.ts");
 
-const namespacesConfigPath = path.resolve(getBaseDir(), "config", "namespaces.json");
 let k8sModulePromise;
 
 async function getK8sModule() {
@@ -31,23 +29,11 @@ function getDomainEnv(entry, domain) {
   return typeof match === "object" ? match?.env : undefined;
 }
 
+// Đọc thẳng SQLite qua settingsRepo (KHÔNG còn qua config/namespaces.json, xem k8sql/CLAUDE.md mục
+// "Đọc thẳng SQLite lúc runtime") — giữ async để không đổi các call site đang await hàm này
+// (discovery.service.js/verify.service.js/getGroupEntryByDomain bên dưới).
 async function readNamespacesConfig() {
-  const raw = await fs.readFile(namespacesConfigPath, "utf8");
-  const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed)) {
-    throw new AppError("config/namespaces.json must be an array.", 500);
-  }
-  return parsed;
-}
-
-function resolveConfigPath(configPath) {
-  if (!configPath) {
-    throw new AppError("Missing configPath in namespaces.json entry.", 500);
-  }
-  if (path.isAbsolute(configPath)) {
-    return configPath;
-  }
-  return path.resolve(getBaseDir(), configPath);
+  return settingsRepo.listNamespaceGroups();
 }
 
 function findClusterByDomain(items, domain) {
@@ -55,22 +41,27 @@ function findClusterByDomain(items, domain) {
   return items.find((item) => Array.isArray(item.domains) && item.domains.some((candidate) => normalizeDomain(domainUrl(candidate)) === target));
 }
 
+// Đọc nội dung kubeconfig THẲNG TỪ KEYCHAIN qua kubeconfigSecretRef (namespace_groups.kubeconfig_
+// secret_ref) rồi kc.loadFromString() — thay cho loadFromFile() đọc config/kubeconfigs/*.yaml trước
+// đây (đã bỏ hẳn, xem k8sql/CLAUDE.md), loại bỏ nhu cầu ghi kubeconfig ra đĩa.
 async function createKubeconfigContext(domain, cluster) {
-  const kubeconfigFilePath = resolveConfigPath(cluster.configPath);
-
-  try {
-    await fs.access(kubeconfigFilePath);
-  } catch {
+  if (!cluster.kubeconfigSecretRef) {
     throw new AppError("Unable to connect to Kubernetes cluster.", 502, {
-      reason: "kubeconfig file not found",
-      kubeconfigFilePath
+      reason: "kubeconfig chưa được cấu hình (thiếu kubeconfigSecretRef)"
+    });
+  }
+
+  const yamlContent = await keychainClient.getSecret(cluster.kubeconfigSecretRef);
+  if (!yamlContent) {
+    throw new AppError("Unable to connect to Kubernetes cluster.", 502, {
+      reason: "kubeconfig secret rỗng hoặc không đọc được từ keychain"
     });
   }
 
   try {
     const k8s = await getK8sModule();
     const kc = new k8s.KubeConfig();
-    kc.loadFromFile(kubeconfigFilePath);
+    kc.loadFromString(yamlContent);
 
     const coreV1 = kc.makeApiClient(k8s.CoreV1Api);
     await coreV1.readNamespace({ name: cluster.namespace });
@@ -80,7 +71,6 @@ async function createKubeconfigContext(domain, cluster) {
       domain,
       clusterName: cluster.name,
       namespace: cluster.namespace,
-      kubeconfigFilePath,
       appsV1: kc.makeApiClient(k8s.AppsV1Api),
       coreV1,
       networkingV1: kc.makeApiClient(k8s.NetworkingV1Api),

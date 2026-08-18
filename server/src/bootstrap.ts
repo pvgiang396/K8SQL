@@ -9,10 +9,11 @@ const path: typeof import("node:path") = require("node:path");
 // `node src/bootstrap.ts`) KHÔNG tự resolve extension .ts như .js (đã tự verify, MODULE_NOT_FOUND
 // nếu bỏ đuôi); esbuild (Phase 2 SEA) resolve đúng cả 2 cách nên không mất tương thích khi bundle.
 const { getDb } = require("./config/db.ts");
-const { materializeLegacyConfig } = require("./secrets/envShim.ts");
+const { refreshProcessEnvSecrets } = require("./secrets/envShim.ts");
 const { importDbEnvironmentsExport } = require("./migration/importFromK8sctl.ts");
 const keychainClient = require("./secrets/keychainClient.ts");
 const { runSelfUpdate } = require("./selfUpdate.ts");
+const { clearAllConfig } = require("./clearConfig.ts");
 
 function readArg(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
@@ -47,12 +48,13 @@ async function main() {
 
   // legacy/utils/base-dir.js đọc process.env.K8SQL_BASE_DIR — PHẢI set trước khi require
   // legacy/app.js (kéo theo mọi controller/service), đúng ràng buộc "nạp env trước khi require
-  // controller/service" ghi trong k8sctl/CLAUDE.md gốc, chỉ đổi nguồn nạp từ file .env sang
-  // SQLite+keychain (qua envShim.materializeLegacyConfig() bên dưới).
+  // controller/service" ghi trong k8sctl/CLAUDE.md gốc. legacy/services giờ đọc thẳng SQLite (không
+  // qua config/*.json nữa, xem envShim.ts) nhưng vẫn cần K8SQL_BASE_DIR cho vài chỗ khác dùng
+  // getBaseDir() (kubeconfig ad-hoc apply, logger...).
   process.env.K8SQL_BASE_DIR = dataDir;
 
-  getDb(); // đảm bảo schema SQLite đã tồn tại trước khi materialize.
-  await materializeLegacyConfig(dataDir);
+  getDb(); // đảm bảo schema SQLite đã tồn tại trước khi đọc.
+  await refreshProcessEnvSecrets();
 
   // eslint-disable-next-line global-require
   const { createApp } = require("../legacy/app");
@@ -69,10 +71,10 @@ async function main() {
       expressApp.post("/internal/import-k8sctl-config", async (req: import("express").Request, res: import("express").Response) => {
         try {
           const summary = await importDbEnvironmentsExport(req.body);
-          // SQLite vừa đổi — materialize lại NGAY để legacy code (đọc config/*.json tĩnh) thấy dữ
-          // liệu mới mà không cần restart sidecar (đã tự bắt được bug này lúc test: import xong
-          // nhưng /sql/environments vẫn trả rỗng vì materialize chỉ chạy 1 lần lúc khởi động).
-          await materializeLegacyConfig(dataDir);
+          // SQLite vừa đổi — refresh process.env NGAY để secret mới đọc được mà không cần restart
+          // sidecar (legacy/services giờ đọc structure trực tiếp từ SQLite mỗi lần gọi, chỉ secret
+          // qua process.env mới cần refresh tường minh).
+          await refreshProcessEnvSecrets();
           res.json({ success: true, data: summary });
         } catch (err) {
           res.status(500).json({ success: false, message: (err as Error).message });
@@ -105,6 +107,16 @@ async function main() {
       expressApp.post("/internal/self-update", async (_req: import("express").Request, res: import("express").Response) => {
         try {
           const result = await runSelfUpdate();
+          res.json({ success: true, data: result });
+        } catch (err) {
+          res.status(500).json({ success: false, message: (err as Error).message });
+        }
+      });
+
+      // Nút "Làm sạch cấu hình" (🧨, cạnh "Cập nhật" trong public/index.html) — xem src/clearConfig.ts.
+      expressApp.post("/internal/clear-config", async (_req: import("express").Request, res: import("express").Response) => {
+        try {
+          const result = await clearAllConfig();
           res.json({ success: true, data: result });
         } catch (err) {
           res.status(500).json({ success: false, message: (err as Error).message });

@@ -443,6 +443,7 @@
       <div class="header-actions">
         <button id="btnSettings" class="icon-btn" title="Cấu hình">⚙️</button>
         <button id="btnUpdate" class="icon-btn" title="Cập nhật ứng dụng">⬇️</button>
+        <button id="btnClearConfig" class="icon-btn" title="Làm sạch cấu hình (xoá toàn bộ Rancher cluster/Connection String/Nhóm namespace đã lưu)">🧨</button>
         <span class="divider"></span>
         <button id="btnExecute" class="icon-btn" title="Execute (Ctrl+Enter)" disabled>▶</button>
         <span class="divider"></span>
@@ -517,13 +518,14 @@
       EditorView, keymap, EditorState, Compartment, basicSetup, defaultKeymap, indentWithTab, sql, PostgreSQL,
       javascript, autocompletion, CompletionContext
     } from "/vendor/codemirror.bundle.js";
-    import { initSettingsModal } from "/shared/settings-modal.js";
+    import { initSettingsModal, confirmDeleteWithKey } from "/shared/settings-modal.js";
     import { MONGO_OPERATOR_COMPLETIONS } from "/vendor/mongo-operators.js";
 
     const treeFilter = document.getElementById("treeFilter");
     const treeEl = document.getElementById("tree");
     const btnSettings = document.getElementById("btnSettings");
     const btnUpdate = document.getElementById("btnUpdate");
+    const btnClearConfig = document.getElementById("btnClearConfig");
     const btnExecute = document.getElementById("btnExecute");
     const btnClear = document.getElementById("btnClear");
     const btnExport = document.getElementById("btnExport");
@@ -1754,6 +1756,34 @@
       }
     }
 
+    // "Làm sạch cấu hình" (🧨) — xoá SẠCH toàn bộ Rancher cluster/Connection String/Nhóm namespace
+    // đã lưu (kể cả secret keychain), xem src/clearConfig.ts. Thao tác phá huỷ không hoàn tác — bắt
+    // gõ đúng chuỗi xác nhận qua confirmDeleteWithKey() (tái dùng từ settings-modal.js) thay vì chỉ
+    // OK/Cancel như updateApp() ở trên.
+    async function clearAllConfig() {
+      const ok = await confirmDeleteWithKey({
+        keyLabel: "chuỗi xác nhận",
+        expectedKey: "XOA HET",
+        itemLabel: "TOÀN BỘ cấu hình đã lưu (mọi Rancher cluster, Connection String, Nhóm namespace) — KHÔNG thể hoàn tác"
+      });
+      if (!ok) return;
+      btnClearConfig.disabled = true;
+      toolbarStatus.textContent = "Đang xoá toàn bộ cấu hình...";
+      try {
+        const response = await fetch("/internal/clear-config", { method: "POST" });
+        const body = await response.json().catch(() => null);
+        if (!response.ok || !body?.success) {
+          throw new Error(body?.message || `HTTP ${response.status}`);
+        }
+        const d = body.data || {};
+        toolbarStatus.textContent = `Đã xoá sạch cấu hình (${d.dbEnvironmentsCleared ?? 0} connection, ${d.rancherClustersCleared ?? 0} Rancher cluster, ${d.namespaceGroupsCleared ?? 0} nhóm namespace) — đang tải lại...`;
+        window.location.reload();
+      } catch (error) {
+        toolbarStatus.textContent = `Lỗi xoá cấu hình: ${error.message}`;
+        btnClearConfig.disabled = false;
+      }
+    }
+
     // ---- Modal "Cấu hình" — markup/CSS/JS thật dùng CHUNG với scripts/wizard.html qua
     // public/shared/settings-modal.js (xem k8sctl/CLAUDE.md mục "Settings"), gọi API /settings/*
     // để THẬT SỰ di chuyển + tạo lại shortcut/service ngay khi app đang chạy, thay vì phải chạy
@@ -1827,6 +1857,7 @@
     btnExport.addEventListener("click", exportConfigFile);
     btnImport.addEventListener("click", importConfigFile);
     btnUpdate.addEventListener("click", updateApp);
+    btnClearConfig.addEventListener("click", clearAllConfig);
 
     // Nút "+" cuối thanh tab mở dropdown 2 mục (Query SQL/Query NoSQL) — không có component dropdown
     // dùng chung sẵn có trong codebase nên tự viết tối giản: absolute-position + toggle [hidden],

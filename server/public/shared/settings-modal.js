@@ -257,7 +257,7 @@ function attachPasswordToggle(input, onReveal) {
 // KHÔNG dùng chung .modal-overlay/.modal-box của public/index.html vì file này còn được dùng độc
 // lập ở scripts/wizard.html (không có 2 class đó). Append thẳng vào document.body (không lồng vào
 // mountEl) để tránh bị kẹt trong vùng scroll của .modal-box khi chạy trong popup Cấu hình.
-function confirmDeleteWithKey({ keyLabel, expectedKey, itemLabel }) {
+export function confirmDeleteWithKey({ keyLabel, expectedKey, itemLabel }) {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "sm-confirm-overlay";

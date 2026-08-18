@@ -89,7 +89,31 @@ async function resolveConnectionInfo(env) {
   return { connectionString: template.replace("__HOST__", `127.0.0.1:${localPort}`), localPort };
 }
 
-async function connectWithDriver(driver, connectionString) {
+// Connection string qua tunnel (k8s-tunnel/exec-relay) chỉ forward được ĐÚNG 1 host thật sang
+// 127.0.0.1:<port> (xem resolveConnectionInfo() ở trên + db.service.js::testConnectionAdhoc()) —
+// nếu chuỗi gốc là replica set nhiều host ("host1,host2,host3"), driver mặc định sẽ cố kết nối tới
+// TẤT CẢ host để discover topology, treo "Server selection timed out" vì các host còn lại (IP nội
+// bộ cluster) không thể với tới từ máy chạy k8sql. "127.0.0.1:" chỉ có thể xuất hiện do chính bước
+// thay __HOST__ ở trên (không phải chuỗi user tự nhập) nên an toàn để coi đó là dấu hiệu "đang qua
+// tunnel, chỉ 1 host này sống" — giữ lại đúng host đó, bỏ các host khác, ép directConnection=true để
+// driver không cố discover replica set qua các seed không thể kết nối.
+function normalizeTunneledConnectionString(connectionString) {
+  const match = String(connectionString || "").match(/^(mongodb(?:\+srv)?:\/\/(?:[^@/]*@)?)([^/?]+)(.*)$/i);
+  if (!match) return connectionString;
+  const [, prefix, hostsPart, rest] = match;
+  const hosts = hostsPart.split(",");
+  if (hosts.length <= 1) return connectionString;
+  const tunneled = hosts.find((h) => h.startsWith("127.0.0.1:"));
+  if (!tunneled) return connectionString;
+  let result = `${prefix}${tunneled}${rest}`;
+  if (!/[?&]directConnection=/i.test(result)) {
+    result += (result.includes("?") ? "&" : "?") + "directConnection=true";
+  }
+  return result;
+}
+
+async function connectWithDriver(driver, rawConnectionString) {
+  const connectionString = normalizeTunneledConnectionString(rawConnectionString);
   const client =
     driver === "legacy"
       ? new LegacyMongoClient(connectionString, {

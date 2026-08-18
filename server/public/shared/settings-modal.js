@@ -227,6 +227,12 @@ function attachPasswordToggle(input, onReveal) {
       toggleBtn.textContent = "⏳";
       try {
         input.value = (await onReveal()) || "";
+        // set input.value trực tiếp KHÔNG tự bắn sự kiện "input" — các field state
+        // (env.urlValue/env.token, xem listener addEventListener("input", ...) gắn ở nơi tạo
+        // input) sẽ không đồng bộ nếu thiếu dòng này, dẫn tới bug thật: user bấm 👁 hiện đúng
+        // connection string/token trên UI nhưng autoDetectPod()/testConnection() vẫn đọc thấy
+        // env.urlValue rỗng (đứng yên từ lúc render) → báo nhầm "Cần nhập Connection String".
+        input.dispatchEvent(new Event("input", { bubbles: true }));
         revealed = true;
         input.title = "";
       } catch (error) {
@@ -1092,6 +1098,25 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
   // nên dùng được cho MỌI Connection String, không chỉ entry chưa lưu. KHÔNG ghi env.existingPodName
   // cho tới khi user xác nhận qua confirmSimple() — chỉ đang dò thử, chưa chắc là lựa chọn cuối.
   async function autoDetectPod(env) {
+    // Entry ĐÃ lưu (!isNew + hasValue) không bắt user phải tự bấm 👁 "hiện giá trị" trước — connection
+    // string thật đã có sẵn trên server, tự gọi reveal ngay tại đây. Trước đây thiếu bước này khiến
+    // link luôn báo nhầm "Cần nhập Connection String..." cho MỌI entry đã lưu chưa từng bấm 👁 trong
+    // phiên hiện tại, dù ô Connection String rõ ràng đã có giá trị (chỉ đang mask).
+    if (!env.urlValue && !env.isNew && env.hasValue && endpoints.revealDbEnvironmentValue) {
+      try {
+        const body = await fetch(endpoints.revealDbEnvironmentValue, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: env.name })
+        }).then((r) => r.json());
+        if (!body.success) throw new Error(body.message || "Lỗi không xác định");
+        env.urlValue = body.data.value || "";
+        renderDbEnvTable();
+      } catch (error) {
+        setStatus(`Không lấy được Connection String thật của "${env.name || "(chưa đặt tên)"}": ${error.message}`, "error");
+        return;
+      }
+    }
     if (!env.urlValue) {
       setStatus("Cần nhập Connection String trước khi kiểm tra pod.", "error");
       return;

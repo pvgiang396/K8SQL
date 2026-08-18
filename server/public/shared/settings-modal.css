@@ -195,13 +195,17 @@
   gap: 8px;
 }
 
-.sm-section-toggle {
+/* Selector 2 class (không phải 1) để specificity vượt qua `.sm-content button` (0,1,1) — cùng lý do
+   đã áp dụng cho `.sm-header .sm-close-x` ở trên, nếu không button/border/padding/min-height 38px
+   của rule dùng chung sẽ đè mất, biến nút chevron nhỏ 18px thành khung vuông rỗng to (bug thật đã
+   gặp, xem srs/NangCapK8SQL/photo_2026-08-17_15-19-31.jpg). */
+.sm-section-title-wrap .sm-section-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 18px;
   height: 18px;
-  min-height: 18px;
+  min-height: 0;
   padding: 0;
   border: none;
   background: transparent;
@@ -210,7 +214,7 @@
   line-height: 1;
 }
 
-.sm-section-toggle svg {
+.sm-section-title-wrap .sm-section-toggle svg {
   width: 14px;
   height: 14px;
   transition: transform .12s ease;
@@ -218,11 +222,11 @@
 
 /* Đồng bộ chevron với .node-row .caret (Object Explorer, index.html) — xoay 90° khi mở thay vì
    đổi ký tự ▸/▾. */
-.sm-section-toggle[aria-expanded="true"] svg {
+.sm-section-title-wrap .sm-section-toggle[aria-expanded="true"] svg {
   transform: rotate(90deg);
 }
 
-.sm-section-toggle:hover {
+.sm-section-title-wrap .sm-section-toggle:hover {
   color: var(--text);
 }
 

@@ -394,6 +394,12 @@
   .json-value.json-null { color: var(--text-dim); font-style: italic; }
   .json-value.json-objectId, .json-value.json-date { color: #7c3aed; }
 
+  /* Thanh action (view/edit/delete) trên mỗi document Mongo — xem buildDocActionBar()/
+     renderResultJsonTree(). Icon xoá/sửa chỉ render khi env.allowWrite=true (xem
+     buildDocActionBar()), icon xem luôn có mặt. */
+  .doc-action-bar { display: flex; justify-content: flex-end; gap: 2px; margin-bottom: 2px; }
+  .doc-action-bar .icon-btn { font-size: 12px; padding: 2px 5px; line-height: 1; }
+
   /* Modal "Cấu hình" — markup/CSS/JS thật nằm ở public/shared/settings-modal.* (dùng chung với
      scripts/wizard.html của quickstart, xem k8sctl/CLAUDE.md mục "Settings"), chỉ giữ overlay +
      box wrapper ở đây. */
@@ -430,6 +436,33 @@
   .json-view-icon {
     cursor: pointer; margin-right: 4px; font-size: 12px;
   }
+
+  /* Popup xem/sửa 1 document Mongo (icon view/edit trên buildDocActionBar()) — kích thước mặc định
+     1060x600 (khác 900x600 của #jsonViewModal ở trên, theo yêu cầu riêng), có nút phóng to toàn màn
+     hình/thu nhỏ về mặc định (chưa có pattern resize/fullscreen nào khác trong file này). */
+  .modal-box.doc-modal-box {
+    width: 1060px; height: 600px;
+    display: flex; flex-direction: column;
+    max-height: calc(100vh - 64px);
+  }
+  .modal-box.doc-modal-box.fullscreen {
+    width: 100vw; height: 100vh; max-width: 100vw; max-height: 100vh; border-radius: 0;
+  }
+  .doc-modal-body {
+    flex: 1 1 auto; overflow: auto; padding: 12px 16px;
+  }
+  .doc-modal-textarea {
+    width: 100%; height: 100%; box-sizing: border-box; resize: none;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px;
+    border: 1px solid var(--border); border-radius: 4px; padding: 8px;
+    background: var(--bg); color: var(--text);
+  }
+  .doc-modal-textarea[readonly] { background: var(--bg-alt); }
+  .doc-modal-footer {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 10px 16px; border-top: 1px solid var(--border); flex: 0 0 auto;
+  }
+  .doc-modal-error { color: #dc2626; font-size: 12px; margin-right: auto; align-self: center; }
 </style>
 <link rel="stylesheet" href="/shared/settings-modal.css" />
 </head>
@@ -475,6 +508,24 @@
         <button type="button" id="jsonViewClose" class="icon-btn" title="Đóng">✕</button>
       </div>
       <div class="json-view-body" id="jsonViewBody"></div>
+    </div>
+  </div>
+  <div class="modal-overlay" id="docEditModal" hidden>
+    <div class="modal-box json-view-box doc-modal-box" id="docEditModalBox">
+      <div class="json-view-header">
+        <h3 id="docEditModalTitle">Xem document</h3>
+        <div>
+          <button type="button" id="docEditFullscreen" class="icon-btn" title="Phóng to toàn màn hình">⛶</button>
+          <button type="button" id="docEditClose" class="icon-btn" title="Đóng">✕</button>
+        </div>
+      </div>
+      <div class="doc-modal-body">
+        <textarea class="doc-modal-textarea" id="docEditTextarea" spellcheck="false"></textarea>
+      </div>
+      <div class="doc-modal-footer">
+        <span class="doc-modal-error" id="docEditError"></span>
+        <button type="button" id="docEditSave" class="primary" hidden>Lưu</button>
+      </div>
     </div>
   </div>
   <main>
@@ -550,6 +601,170 @@
     jsonViewModal.addEventListener("click", (e) => {
       if (e.target === jsonViewModal) jsonViewModal.hidden = true;
     });
+
+    // Popup xem/sửa 1 document Mongo (icon 👁/✏️ trên mỗi doc, xem buildDocActionBar()) — dùng
+    // chung 1 modal cho cả 2 mode "view"/"edit" (chỉ khác readonly + nút Lưu có/không hiện), khác
+    // #jsonViewModal ở trên (chỉ xem, dùng cho cột json/jsonb ở bảng SQL).
+    const docEditModal = document.getElementById("docEditModal");
+    const docEditModalBox = document.getElementById("docEditModalBox");
+    const docEditModalTitle = document.getElementById("docEditModalTitle");
+    const docEditTextarea = document.getElementById("docEditTextarea");
+    const docEditFullscreen = document.getElementById("docEditFullscreen");
+    const docEditClose = document.getElementById("docEditClose");
+    const docEditSave = document.getElementById("docEditSave");
+    const docEditError = document.getElementById("docEditError");
+    let docEditCtx = null; // { tab, row } — ngữ cảnh popup đang mở, null khi đóng
+
+    function closeDocEditModal() {
+      docEditModal.hidden = true;
+      docEditModalBox.classList.remove("fullscreen");
+      docEditCtx = null;
+    }
+    docEditFullscreen.addEventListener("click", () => {
+      docEditModalBox.classList.toggle("fullscreen");
+    });
+    docEditClose.addEventListener("click", closeDocEditModal);
+    docEditModal.addEventListener("click", (e) => {
+      if (e.target === docEditModal) closeDocEditModal();
+    });
+
+    function openDocPopup(tab, row, mode) {
+      docEditCtx = { tab, row };
+      docEditModalBox.classList.remove("fullscreen");
+      docEditModalTitle.textContent = mode === "edit" ? "Sửa document" : "Xem document";
+      docEditTextarea.value = JSON.stringify(row, null, 2);
+      docEditTextarea.readOnly = mode !== "edit";
+      docEditSave.hidden = mode !== "edit";
+      docEditError.textContent = "";
+      docEditModal.hidden = false;
+    }
+
+    // Tên collection không được lưu riêng trong state tab sau khi tạo (chỉ dùng 1 lần làm title
+    // tab lúc mở, xem openMongoQueryTab()) — lấy lại từ câu lệnh Mongo (đã chạy hoặc đang gõ), cùng
+    // regex dùng cho autocomplete tên collection ở buildMongoCompletions().
+    function getMongoCollectionFromTab(tab) {
+      const sqlText = tab.currentQuerySql || (tab.view ? tab.view.state.doc.toString() : "");
+      const match = /db\.(\w+)\./.exec(sqlText || "");
+      return match ? match[1] : null;
+    }
+
+    function idDisplayString(id) {
+      if (id && typeof id === "object" && typeof id.$oid === "string") return id.$oid;
+      return String(id);
+    }
+
+    // args EJSON-encode nguyên vẹn ({"$oid":"..."} vẫn được backend's EJSON.parse({relaxed:true})
+    // hiểu đúng thành ObjectId, xem parseMongoCall() trong services/providers/mongo/query.js) — nên
+    // KHÔNG cần tự dịch sang cú pháp ObjectId("...")/ISODate("...") của mongosh, chỉ JSON.stringify
+    // thẳng object là đủ.
+    function buildDeleteOneStatement(collection, idValue) {
+      return `db.${collection}.deleteOne(${JSON.stringify({ _id: idValue })})`;
+    }
+    function buildReplaceOneStatement(collection, idValue, editedObj) {
+      return `db.${collection}.replaceOne(${JSON.stringify({ _id: idValue })}, ${JSON.stringify(editedObj)})`;
+    }
+
+    docEditSave.addEventListener("click", async () => {
+      if (!docEditCtx) return;
+      const { tab, row } = docEditCtx;
+      let editedObj;
+      try {
+        editedObj = JSON.parse(docEditTextarea.value);
+      } catch (error) {
+        docEditError.textContent = `JSON không hợp lệ: ${error.message}`;
+        return;
+      }
+      const collection = getMongoCollectionFromTab(tab);
+      if (!collection) {
+        docEditError.textContent = "Không xác định được tên collection từ câu lệnh hiện tại.";
+        return;
+      }
+      const env = findEnvByName(tab.boundEnvName);
+      if (!env) return;
+      docEditError.textContent = "";
+      docEditSave.disabled = true;
+      try {
+        await fetchJson("/sql/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            env: env.name,
+            sql: buildReplaceOneStatement(collection, row._id, editedObj),
+            database: tab.activeMongoDatabase
+          })
+        });
+        closeDocEditModal();
+        runQuery(tab, tab.lastResultData?.page || 1, tab.currentQuerySql);
+      } catch (error) {
+        docEditError.textContent = error.message;
+      } finally {
+        docEditSave.disabled = false;
+      }
+    });
+
+    async function confirmDeleteDoc(tab, row) {
+      const collection = getMongoCollectionFromTab(tab);
+      const id = idDisplayString(row._id);
+      const database = tab.activeMongoDatabase;
+      const ok = await confirmDeleteWithKey({
+        keyLabel: "id",
+        expectedKey: id,
+        itemLabel: `phần tử có id ${id} của collection ${collection}, database ${database}`
+      });
+      if (!ok) return;
+      const env = findEnvByName(tab.boundEnvName);
+      if (!env || !collection) return;
+      try {
+        await fetchJson("/sql/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            env: env.name,
+            sql: buildDeleteOneStatement(collection, row._id),
+            database
+          })
+        });
+        runQuery(tab, tab.lastResultData?.page || 1, tab.currentQuerySql);
+      } catch (error) {
+        toolbarStatus.textContent = `Lỗi xoá: ${error.message}`;
+      }
+    }
+
+    // 3 icon action (view/edit/delete) trên mỗi document — edit/delete chỉ hiện khi env.allowWrite
+    // (tránh UX bấm xong mới nhận lỗi 403 từ backend, xem parseMongoCall's WRITE_METHODS gating).
+    function buildDocActionBar(tab, row) {
+      const bar = document.createElement("div");
+      bar.className = "doc-action-bar";
+
+      const btnView = document.createElement("button");
+      btnView.type = "button";
+      btnView.className = "icon-btn";
+      btnView.title = "Xem";
+      btnView.textContent = "👁";
+      btnView.addEventListener("click", () => openDocPopup(tab, row, "view"));
+      bar.appendChild(btnView);
+
+      const env = findEnvByName(tab.boundEnvName);
+      if (env && env.allowWrite) {
+        const btnEdit = document.createElement("button");
+        btnEdit.type = "button";
+        btnEdit.className = "icon-btn";
+        btnEdit.title = "Sửa";
+        btnEdit.textContent = "✏️";
+        btnEdit.addEventListener("click", () => openDocPopup(tab, row, "edit"));
+        bar.appendChild(btnEdit);
+
+        const btnDelete = document.createElement("button");
+        btnDelete.type = "button";
+        btnDelete.className = "icon-btn";
+        btnDelete.title = "Xóa";
+        btnDelete.textContent = "🗑";
+        btnDelete.addEventListener("click", () => confirmDeleteDoc(tab, row));
+        bar.appendChild(btnDelete);
+      }
+
+      return bar;
+    }
     const editorContainerEl = document.getElementById("editor");
     const resultsWrapEl = document.getElementById("resultsWrap");
     const editorEmptyEl = document.getElementById("editorEmpty");
@@ -1392,7 +1607,7 @@
     // JSON tree — kết quả Mongo (không phải bảng, mỗi document 1 khối cây thu gọn/mở rộng, xem
     // public/vendor/json-tree.js::renderJsonTree). Dùng CHUNG pagination UI (#pagerRow/renderPager())
     // với Postgres — chỉ khác phần "render nội dung mỗi trang".
-    function renderResultJsonTree(els, data, onPageChange) {
+    function renderResultJsonTree(tab, els, data, onPageChange) {
       const isPaginated = data.totalRows !== undefined;
       els.resultsMeta.className = "";
       els.resultsMeta.textContent = isPaginated
@@ -1413,6 +1628,7 @@
       for (const row of data.rows) {
         const docWrap = document.createElement("div");
         docWrap.className = "json-doc";
+        docWrap.appendChild(buildDocActionBar(tab, row));
         docWrap.appendChild(window.renderJsonTree(row));
         els.jsonResultsWrap.appendChild(docWrap);
       }
@@ -1430,7 +1646,7 @@
     // bất kể tab đó có đang active hay không — pane ẩn sẵn (hidden) tới khi user chuyển sang tab đó.
     function renderResults(tab, data, onPageChange) {
       if (tab.engineType === "mongo") {
-        renderResultJsonTree(tab.resultEls, data, onPageChange);
+        renderResultJsonTree(tab, tab.resultEls, data, onPageChange);
       } else {
         renderResultTable(tab.resultEls, data, onPageChange);
       }

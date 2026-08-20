@@ -702,6 +702,43 @@ còn dữ liệu test cũ từ lần cài trước, không phải bug `importCon
 `confirmDeleteWithKey()` (gõ đúng chuỗi, export thêm từ `settings-modal.js` để `index.html` tái
 dùng) — không dùng `window.confirm()` OK/Cancel vì đây là thao tác không hoàn tác.
 
+## Icon view/edit/delete trên mỗi document kết quả query Mongo (2026-08-20)
+
+`server/public/index.html`'s `renderResultJsonTree()` (danh sách document trả về khi query Mongo)
+giờ chèn thêm `buildDocActionBar(tab, row)` phía trên mỗi `.json-doc` — 3 icon 👁 (Xem) luôn hiện,
+✏️ (Sửa)/🗑 (Xoá) chỉ hiện khi `env.allowWrite === true` (tránh bấm xong mới nhận lỗi 403 từ
+backend, cùng gating `WRITE_METHODS` ở `services/providers/mongo/query.js`).
+
+- **Popup xem/sửa** (`#docEditModal`, khác `#jsonViewModal` có sẵn — modal đó chỉ xem, dùng cho cột
+  json/jsonb ở bảng SQL, giữ nguyên không đụng): kích thước mặc định **1060x600**, nút ⛶ toggle
+  class `.doc-modal-box.fullscreen` (100vw/100vh) ↔ mặc định. Nội dung là 1 `<textarea>`
+  `JSON.stringify(row, null, 2)` — `readonly` ở mode view, editable ở mode edit (nút Lưu chỉ hiện
+  mode edit). Bấm Lưu → `JSON.parse()` nội dung, gửi `db.<collection>.replaceOne({_id: row._id},
+  <editedObj>)` qua `POST /sql/query` (route hiện có, không có route CRUD Mongo riêng).
+- **Xoá**: `confirmDeleteDoc()` gọi `confirmDeleteWithKey()` (có sẵn ở `shared/settings-modal.js`,
+  đã export sẵn) — nội dung "Bạn có chắc chắn muốn xóa phần tử có id X của collection Y, database
+  Z?" + bắt gõ lại đúng id mới cho xoá — rồi gửi `db.<collection>.deleteOne({_id: row._id})`.
+- **Serialize EJSON không cần dịch riêng**: `row._id` đã ở dạng Extended JSON (`{"$oid": "..."}`)
+  do backend tự serialize (`EJSON.serialize`) — `JSON.stringify()` thẳng object đó rồi gửi lên vẫn
+  được backend's `EJSON.parse(..., {relaxed: true})` (`parseMongoCall()`) hiểu đúng thành
+  `ObjectId(...)`, không cần tự viết hàm dịch `{$oid}` → cú pháp `ObjectId("...")` của mongosh.
+- **Tên collection không có sẵn trong state tab** sau khi tạo (chỉ dùng 1 lần làm title tab) —
+  `getMongoCollectionFromTab()` tự parse lại từ `tab.currentQuerySql`/nội dung editor bằng regex
+  `db\.(\w+)\.`, cùng pattern autocomplete tên collection đã có.
+- Sau khi Lưu/Xoá thành công, tự gọi lại `runQuery(tab, tab.lastResultData?.page || 1,
+  tab.currentQuerySql)` để refresh danh sách — không tự chèn/xoá row trong DOM.
+
+Đã verify E2E thật (không chỉ đọc code) — dựng dev sidecar riêng (`node src/bootstrap.ts --port
+4299 --data-dir <tmp> --native-bridge-url ... --native-bridge-token ...`, fake native-bridge HTTP
+tự viết, cùng kỹ thuật Phase 3) trỏ vào MongoDB local thật (`mongod` sẵn có trên máy dev), qua
+Playwright: 3 icon hiện đúng khi `allowWrite=true`, chỉ còn 👁 khi `allowWrite=false`; popup view
+đúng 1060x600 readonly không có nút Lưu; toggle fullscreen đúng kích thước; Sửa 1 field + Lưu →
+`mongosh` xác nhận document đổi thật trong DB + list tự refresh; Xoá → popup đúng nội dung yêu cầu,
+bắt gõ lại id, xoá xong → `mongosh` xác nhận document mất thật + list tự refresh. **Chưa verify
+trên app `.deb`/WebKitGTK thật** — theo tiền lệ đã ghi nhiều lần trong file này (Phase 9, "3 fix
+theo srs/nangcapk8sql/v1.md"...), UI mới cần rebuild + cài lại rồi tự tay xác nhận trên app thật
+trước khi coi là hoàn tất, Playwright/Chromium chỉ xác nhận đúng luồng logic.
+
 ## AI dùng k8sql
 
 Kiểm tra `curl -s -m 2 http://127.0.0.1:4210/health`. Nếu không phản hồi:

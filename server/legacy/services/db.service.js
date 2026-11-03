@@ -28,10 +28,10 @@ function providersFor(envName) {
   return { env, engine, ...providers };
 }
 
-async function runQuery(envName, sql, { page, pageSize, database } = {}) {
+async function runQuery(envName, sql, { page, pageSize, database, params } = {}) {
   const { env, query } = providersFor(envName);
   try {
-    const { kind, ...data } = await query.runQuery(env, envName, sql, { page, pageSize, database });
+    const { kind, ...data } = await query.runQuery(env, envName, sql, { page, pageSize, database, params });
     logOperation({
       resource: "sql",
       env: envName,
@@ -83,6 +83,23 @@ async function listColumns(envName, schemaName, table, { page, pageSize } = {}) 
     return data;
   } catch (error) {
     logOperation({ resource: "sql", env: envName, operation: "list-columns", success: false, error: error.message });
+    throw error instanceof AppError ? error : new AppError(error.message, 400);
+  }
+}
+
+// Chỉ có ý nghĩa với Postgres (Mongo dùng cố định "_id" làm khoá, không cần tra cứu) — engine mongo
+// trả mảng rỗng thay vì lỗi, để FE dùng chung 1 lời gọi cho mọi engine mà không phải tự rẽ nhánh.
+async function getPrimaryKeyColumns(envName, schemaName, table) {
+  const { env, engine, schema } = providersFor(envName);
+  if (engine === "mongo" || typeof schema.getPrimaryKeyColumns !== "function") {
+    return [];
+  }
+  try {
+    const data = await schema.getPrimaryKeyColumns(env, schemaName, table);
+    logOperation({ resource: "sql", env: envName, operation: "get-primary-key", success: true, rowCount: data.length });
+    return data;
+  } catch (error) {
+    logOperation({ resource: "sql", env: envName, operation: "get-primary-key", success: false, error: error.message });
     throw error instanceof AppError ? error : new AppError(error.message, 400);
   }
 }
@@ -198,6 +215,7 @@ module.exports = {
   listSchemas,
   listTables,
   listColumns,
+  getPrimaryKeyColumns,
   getFullSchema,
   testConnection,
   testConnectionAdhoc

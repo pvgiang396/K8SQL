@@ -41,20 +41,28 @@ async function teardown(entry) {
 // `buildEntry()` trả về { server, localPort, ctx, podName } khi mở tunnel thành công — hàm này lo
 // phần cache/dedup chung, buildEntry() chỉ lo phần mở tunnel thật sự (khác nhau giữa openTunnel()/
 // openTunnelForDbEnv()).
-async function withDedupedOpen(key, buildEntry) {
-  const existing = tunnels.get(key);
-  if (existing) {
-    existing.lastUsedAt = Date.now();
-    return { localPort: existing.localPort, expiresInSec: IDLE_TIMEOUT_MS / 1000 };
-  }
-
+async function withDedupedOpen(key, buildEntry, validateEntry) {
   const pending = pendingOpens.get(key);
   if (pending) {
     return pending;
   }
 
   const openPromise = (async () => {
-    const entry = await buildEntry();
+    const existing = tunnels.get(key);
+    let previousError;
+    if (existing) {
+      try {
+        if (!validateEntry || await validateEntry(existing)) {
+          existing.lastUsedAt = Date.now();
+          return { localPort: existing.localPort, expiresInSec: IDLE_TIMEOUT_MS / 1000 };
+        }
+      } catch (error) {
+        previousError = error;
+      }
+      if (tunnels.get(key) === existing) tunnels.delete(key);
+      existing.server.close();
+    }
+    const entry = await buildEntry(previousError);
     tunnels.set(key, { ...entry, lastUsedAt: Date.now() });
     return { localPort: entry.localPort, expiresInSec: IDLE_TIMEOUT_MS / 1000 };
   })();
@@ -121,7 +129,17 @@ async function openTunnel(domain) {
 // giá trị khác nhau, không thể trùng.
 async function openTunnelForDbEnv(dbEnv) {
   const key = `db-env:${dbEnv.name}`;
-  return withDedupedOpen(key, async () => {
+  const template = process.env[dbEnv.connectionStringEnvVar];
+  const signature = JSON.stringify([dbEnv.mode, dbEnv.rancherKey, dbEnv.namespace, dbEnv.projectId, dbEnv.dbHost, dbEnv.dbPort, dbEnv.existingPodName, dbEnv.engine, template]);
+  async function checkConnection(entry) {
+    if (!template) throw new AppError(`Connection String của "${dbEnv.name}" chưa được cấu hình.`, 500);
+    const { detectEngine } = require("./db-environment.service");
+    const query = detectEngine(dbEnv) === "mongo"
+      ? require("./providers/mongo/query")
+      : require("./providers/postgres/query");
+    await query.pingAdhoc(template.replace("__HOST__", `127.0.0.1:${entry.localPort}`));
+  }
+  return withDedupedOpen(key, async (previousError) => {
     const domainLabel = `db-env:${dbEnv.name}`;
     const ctx = await buildRancherContext({
       domain: domainLabel,
@@ -143,18 +161,52 @@ async function openTunnelForDbEnv(dbEnv) {
         );
       }
 
-      try {
-        const { podName, server, localPort, relayTool } = await rancherDbTunnel.openTunnelViaExec(ctx, {
-          podName: dbEnv.existingPodName,
-          dbHost: dbEnv.dbHost,
-          dbPort: dbEnv.dbPort
-        });
-        logOperation({ ...ctx, resource: "db-tunnel", operation: "open-exec", success: true, relayTool });
-        return { server, localPort, ctx, podName, execMode: true };
-      } catch (error) {
-        logOperation({ ...ctx, resource: "db-tunnel", operation: "open-exec", success: false, error: error.message });
-        throw error;
+      if (!template) throw new AppError(`Connection String của "${dbEnv.name}" chưa được cấu hình.`, 500);
+      const { listPodsForDbEnv } = require("./pod.service");
+      const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
+      const tryPod = async (podName) => {
+        const tunnel = await rancherDbTunnel.openTunnelViaExec(ctx, { podName, dbHost: dbEnv.dbHost, dbPort: dbEnv.dbPort });
+        try {
+          await checkConnection(tunnel);
+          if (tunnel.podName !== dbEnv.existingPodName) {
+            try {
+              if (process.env[dbEnv.connectionStringEnvVar] !== template || !settingsRepo.replaceDbEnvironmentPod(dbEnv, tunnel.podName)) {
+                throw new AppError(`Cấu hình "${dbEnv.name}" đã thay đổi trong khi dò pod; hãy thử lại.`, 409, { stage: "save-pod" });
+              }
+            } catch (error) {
+              if (error instanceof AppError) throw error;
+              throw new AppError(`Không thể lưu pod khả dụng cho "${dbEnv.name}": ${error.message}`, 500, { stage: "save-pod" });
+            }
+            dbEnv.existingPodName = tunnel.podName;
+          }
+          logOperation({ ...ctx, resource: "db-tunnel", operation: "open-exec", success: true, relayTool: tunnel.relayTool });
+          return { ...tunnel, ctx, execMode: true, signature: JSON.stringify([dbEnv.mode, dbEnv.rancherKey, dbEnv.namespace, dbEnv.projectId, dbEnv.dbHost, dbEnv.dbPort, dbEnv.existingPodName, dbEnv.engine, template]) };
+        } catch (error) {
+          tunnel.server.close();
+          throw error;
+        }
+      };
+
+      let originalError = previousError;
+      if (!originalError) {
+        try {
+          return await tryPod(dbEnv.existingPodName);
+        } catch (error) {
+          if (error.metadata?.stage === "save-pod") throw error;
+          originalError = error;
+        }
       }
+      const pods = await listPodsForDbEnv(dbEnv.name);
+      for (const pod of pods) {
+        if (!pod.name || pod.name === dbEnv.existingPodName) continue;
+        try {
+          return await tryPod(pod.name);
+        } catch (error) {
+          if (error.metadata?.stage === "save-pod") throw error;
+        }
+      }
+      logOperation({ ...ctx, resource: "db-tunnel", operation: "open-exec", success: false, error: originalError.message });
+      throw new AppError(`Không tìm thấy pod khả dụng cho "${dbEnv.name}". Lỗi kết nối ban đầu: ${originalError.message}`, Number(originalError.statusCode) || 502);
     }
 
     const access = await permissionsService.checkAccessForCtx(ctx);
@@ -187,6 +239,11 @@ async function openTunnelForDbEnv(dbEnv) {
       logOperation({ ...ctx, resource: "db-tunnel", operation: "open", success: false, error: error.message });
       throw error;
     }
+  }, async (entry) => {
+    if (!entry.execMode && !dbEnv.existingPodName) return true;
+    if (!entry.execMode || !dbEnv.existingPodName || entry.signature !== signature) return false;
+    await checkConnection(entry);
+    return true;
   });
 }
 

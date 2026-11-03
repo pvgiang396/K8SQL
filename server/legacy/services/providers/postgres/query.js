@@ -125,11 +125,11 @@ function assertReadOnlySql(withoutTrailingSemicolon) {
 // count(*) OVER() để phân trang thật.
 // Trả về kèm field "kind" ("query"/"write") để dispatcher (services/db.service.js) log đúng
 // operation — KHÔNG phải 1 phần response thật trả cho client, dispatcher tự xoá trước khi trả ra.
-async function runQuery(env, envName, sql, { page, pageSize } = {}) {
+async function runQuery(env, envName, sql, { page, pageSize, params } = {}) {
   const normalized = normalizeSingleStatement(sql);
 
   if (!/^(select|with)\b/i.test(normalized)) {
-    return runWriteStatement(env, envName, normalized);
+    return runWriteStatement(env, envName, normalized, params);
   }
 
   const safeSql = assertReadOnlySql(normalized);
@@ -206,7 +206,7 @@ async function runQuery(env, envName, sql, { page, pageSize } = {}) {
 // Nhánh ghi — chỉ chạy khi env.allowWrite === true (cấu hình trong db-environments.json, không
 // phải cờ client tự truyền lên, tránh 1 request lừa 1 env read-only chuyển sang ghi). Khác nhánh
 // đọc: dùng transaction thường (BEGIN/COMMIT) để dữ liệu thật sự được lưu, không ROLLBACK.
-async function runWriteStatement(env, envName, sql) {
+async function runWriteStatement(env, envName, sql, params) {
   if (!env.allowWrite) {
     throw new AppError(
       `Environment "${envName}" chưa bật allowWrite trong config/db-environments.json — chỉ hỗ trợ câu lệnh SELECT/WITH.`,
@@ -218,7 +218,11 @@ async function runWriteStatement(env, envName, sql) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const result = await client.query(sql);
+    // params (mảng, optional) — cho phép caller (vd cột Thao tác INSERT/UPDATE/DELETE của GUI) build
+    // câu lệnh bằng placeholder $1,$2,... thay vì nối chuỗi trực tiếp giá trị nhập từ form, tránh SQL
+    // injection tự chế trên 1 tool có thể trỏ tới production qua DB Tunnel. Không ảnh hưởng caller cũ
+    // (AI/GUI gửi raw SQL không kèm params vẫn hoạt động y nguyên — pg cho phép params=undefined).
+    const result = await client.query(sql, params);
     await client.query("COMMIT");
 
     return {

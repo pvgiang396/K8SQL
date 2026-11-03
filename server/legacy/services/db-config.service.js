@@ -1,6 +1,7 @@
 "use strict";
 
 const { AppError } = require("../utils/error");
+const { selectExportBundle } = require("./sql-config-codec");
 const { loadEnvironments, listEnvironmentsPublic } = require("./db-environment.service");
 const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
 const {
@@ -8,6 +9,7 @@ const {
   deriveTokenEnvVar,
   deriveConnStringEnvVar
 } = require("../../src/secrets/envShim.ts");
+const { migrateRancherClusterKeys } = require("../../src/migration/migrateRancherKeys.ts");
 
 // LƯU Ý BẢO MẬT: exportConfig()/importConfig() là bề mặt API DUY NHẤT trả/nhận credential Postgres
 // THẬT — mọi endpoint /sql/* khác (đặc biệt listEnvironmentsPublic()) cố tình không bao giờ lộ
@@ -30,8 +32,20 @@ function exportConfig() {
     rancherClusters: rancherClusters.map((cluster) => ({
       ...cluster,
       token: process.env[cluster.tokenEnvVar] || ""
-    }))
+    })),
+    namespaceGroups: settingsRepo.listNamespaceGroups()
   };
+}
+
+function exportSelection({ environmentNames, namespaceGroupNames }) {
+  if (!Array.isArray(environmentNames) || !Array.isArray(namespaceGroupNames)) {
+    throw new AppError('"environmentNames" và "namespaceGroupNames" phải là mảng.', 400);
+  }
+  const bundle = selectExportBundle(exportConfig(), { environmentNames, namespaceGroupNames });
+  if (!bundle.environments.length && !bundle.namespaceGroups.length) {
+    throw new AppError("Không có connection hoặc nhóm namespace nào khớp lựa chọn.", 400);
+  }
+  return bundle;
 }
 
 // environments/rancherClusters: mỗi entry tự chứa secret thật ("connectionString"/"token", xem
@@ -42,9 +56,14 @@ function exportConfig() {
 // KHÁC ngữ nghĩa "replace-all" của settingsRepo.upsertRancherClusters()/upsertDbEnvironments() (dùng
 // cho nút "Áp dụng" toàn bộ danh sách của Settings UI): import chỉ nên BỔ SUNG, không được xoá mất
 // cấu hình khác người nhận đã tự thêm trước đó.
-async function importConfig({ environments, rancherClusters }) {
-  if (!Array.isArray(environments) || environments.length === 0) {
-    throw new AppError('Body phải có field "environments" là 1 mảng không rỗng.', 400);
+async function importConfig({ environments, rancherClusters, namespaceGroups }) {
+  if (!Array.isArray(environments)) {
+    throw new AppError('Body phải có field "environments" là 1 mảng.', 400);
+  }
+  const hasGroups = Array.isArray(namespaceGroups) && namespaceGroups.length > 0;
+  const hasClusters = Array.isArray(rancherClusters) && rancherClusters.length > 0;
+  if (environments.length === 0 && !hasGroups && !hasClusters) {
+    throw new AppError("File không có dữ liệu để import.", 400);
   }
   if (environments.some((item) => !item || typeof item.name !== "string" || !item.name)) {
     throw new AppError('Mỗi phần tử "environments" phải có field "name".', 400);
@@ -57,6 +76,12 @@ async function importConfig({ environments, rancherClusters }) {
   }
   if ((rancherClusters || []).some((item) => !item || typeof item.name !== "string" || !item.name)) {
     throw new AppError('Mỗi phần tử "rancherClusters" phải có field "name".', 400);
+  }
+  if (namespaceGroups !== undefined && !Array.isArray(namespaceGroups)) {
+    throw new AppError('"namespaceGroups" phải là 1 mảng.', 400);
+  }
+  if ((namespaceGroups || []).some((item) => !item || typeof item.name !== "string" || !item.name)) {
+    throw new AppError('Mỗi phần tử "namespaceGroups" phải có field "name".', 400);
   }
 
   const secrets = {};
@@ -95,23 +120,38 @@ async function importConfig({ environments, rancherClusters }) {
     dbEnvironmentsImported.push(structural.name);
   }
 
-  // Cluster PHẢI ghi trước — db_environments FK vào rancher_clusters qua tên (rancherKey), xem
-  // settingsRepo.upsertDbEnvironments() tự lookup rancher_clusters.id theo tên lúc INSERT/UPDATE.
+  const namespaceGroupsImported = [];
+  let mergedGroups = null;
+  if (Array.isArray(namespaceGroups)) {
+    mergedGroups = [...settingsRepo.listNamespaceGroups()];
+    for (const incoming of namespaceGroups) {
+      const index = mergedGroups.findIndex((item) => item.name === incoming.name);
+      if (index >= 0) mergedGroups[index] = { ...mergedGroups[index], ...incoming };
+      else mergedGroups.push(incoming);
+      namespaceGroupsImported.push(incoming.name);
+    }
+  }
+
+  // Cluster PHẢI ghi trước — db_environments và namespace_groups FK vào rancher_clusters qua tên.
   await settingsRepo.upsertRancherClusters(mergedClusters);
   await settingsRepo.upsertDbEnvironments(mergedEnvironments);
+  if (mergedGroups) await settingsRepo.upsertNamespaceGroups(mergedGroups);
   if (Object.keys(secrets).length > 0) {
     await settingsRepo.applySecretValues(secrets);
   }
+  await migrateRancherClusterKeys();
   await refreshProcessEnvSecrets();
 
   return {
     environments: listEnvironmentsPublic(),
     rancherClustersImported,
-    dbEnvironmentsImported
+    dbEnvironmentsImported,
+    namespaceGroupsImported
   };
 }
 
 module.exports = {
   exportConfig,
+  exportSelection,
   importConfig
 };

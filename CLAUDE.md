@@ -7,6 +7,23 @@
 
 ## Vai trò
 
+**2026-11-03 — tự phục hồi exec-relay:** mỗi lần dùng tunnel `existingPodName`, kiểm tra kết nối DB bằng `pingAdhoc` (Postgres `SELECT 1`/Mongo ping) trước thao tác; nếu lỗi, dò tuần tự pod trong namespace bằng cùng cơ chế kiểm tra như Settings, không tạo jump pod. Chỉ lưu pod đã ping thành công vào SQLite, với điều kiện cấu hình và secret chưa đổi; nhiều request cùng connection dùng chung lần dò. Settings giữ pod vừa phục hồi khi người dùng lưu một bản cũ mà không sửa trường pod. Không tự chạy lại câu lệnh DB đã thực thi. Cần quyền list pod và exec; nếu không có pod khả dụng thì giữ nguyên cấu hình và báo lỗi. Bản cài đặt cần rebuild/cài lại để nhận sửa đổi.
+
+Object Explorer mở connection qua `GET /sql/schemas`, dùng cùng luồng phục hồi này cho cả Postgres và Mongo. Nếu lần tải lỗi, thu gọn và mở lại node sẽ thử lại thay vì giữ mãi lỗi cũ.
+
+**2026-10-19 — URL KEY Connection String:** key mới = key cũ (`dbType_host_port` hoặc
+`dbType_namespace_dbHost_port`) + `_DATABASE_NAME` lấy từ path chuỗi kết nối (bỏ query
+`authSource`, chuẩn hóa chữ hoa/`_`). `server/public/shared/settings-modal.js::deriveDbEnvKey()`
+sinh key mới; `server/src/migration/migrateDbEnvKeys.ts` tự nâng cấp key cũ lúc khởi động/import,
+giữ nguyên `id`/`secret_ref` trong SQLite để không mất secret trong keychain. Các key không có
+database path được giữ nguyên. Kết quả MongoDB ở `server/public/index.html` dùng `.jsonResultsWrap`
+cuộn độc lập, pager cố định phía trên và header JSON cùng hàng với các icon; các document mặc định
+thu gọn qua `renderJsonTree(row, { expandRoot: false })`, popup JSON khác vẫn mở cấp gốc.
+
+**Popup xem/sửa Mongo phóng to:** `header` ứng dụng có `z-index:250`, nên `#docEditModal`
+phải có `z-index` cao hơn (300) để nút thu nhỏ/đóng ở góc trên không bị header chặn click.
+Đã kiểm tra trên Chrome: mở Xem/Sửa → phóng to → thu nhỏ/đóng, Escape cũng đóng popup.
+
 k8sql là desktop app đa nền tảng (Windows/macOS/Linux) cho Kubernetes/Rancher Tool Server + SQL
 Tool — **kế thừa gần như nguyên vẹn backend của
 [k8sctl](https://gitlab.com/pvgiang396/k8sctl)** (68 file controller/service, không có native
@@ -49,6 +66,11 @@ thật. **k8sctl tiếp tục chạy song song, không bị đụng tới** tron
    cài lại mới nhận code mới; nếu chỉ cần xoá 1 Ingress gấp mà chưa kịp rebuild, gọi thẳng Rancher
    Norman API (`DELETE {rancherUrl}/v3/project/{clusterId}:{projectId}/ingresses/{namespace}:{name}`
    kèm `Authorization: Bearer <token>`) như đã làm ở #91.
+8. **MCP server**: tích hợp route `/mcp` (Streamable HTTP, `@modelcontextprotocol/sdk`) NGAY TRONG
+   sidecar Express đang chạy — không phải process riêng. Lý do: secret thật (Rancher token/DB
+   connection string) chỉ tồn tại trong `process.env` của CHÍNH sidecar này (populate từ keychain
+   qua `native_bridge.rs`, chỉ sống khi Tauri app đang chạy) — không thể tách MCP thành tiến trình
+   độc lập mà vẫn dùng được secret thật. Chi tiết đầy đủ ở mục "MCP server" bên dưới.
 
 ## Cấu trúc repo
 
@@ -84,7 +106,11 @@ k8sql/
 │   │   ├── secrets/keychainClient.ts # gọi native_bridge (getSecret/setSecret/deleteSecret/get|setAutostart)
 │   │   ├── secrets/envShim.ts        # materializeLegacyConfig() — SQLite+keychain → config/*.json + .env
 │   │   │                           #   thật trên đĩa (chạy lại sau mỗi lần SQLite đổi, vd sau import)
-│   │   └── migration/importFromK8sctl.ts  # import export cũ k8sctl (GET /sql/config/export) vào SQLite+keychain
+│   │   ├── migration/importFromK8sctl.ts  # import export cũ k8sctl (GET /sql/config/export) vào SQLite+keychain
+│   │   └── mcp/                     # MCP server cho AI (xem mục "MCP server" bên dưới) —
+│   │       ├── server.ts              #   registerMcpRoute(expressApp), gọi từ bootstrap.ts
+│   │       ├── context.ts             #   isWriteEnabled()/callService()/assertReadOnlySql()
+│   │       └── tools/{k8s-read,k8s-meta,sql-read,k8s-write,sql-write}.ts
 │   ├── scripts/build-sea.mjs              # esbuild bundle + node --experimental-sea-config + postject
 │   ├── scripts/shims/optional-require.cjs # shim SEA-safe thay `optional-require` (mongodb-legacy-driver)
 │   ├── scripts/import-k8sctl-config.mjs   # CLI mỏng POST file export cũ tới sidecar đang chạy
@@ -217,6 +243,18 @@ k8sql/
     đã migrate (`DVCCDDEMO_HUE` → `dvc-cd-hue`/`applications-vtu`/3 service `r3web`/`r3svc`/`r3auth`),
     thêm/xoá 1 nhóm test qua UI hoạt động đúng không phá dữ liệu thật, restart app + lưu lại Rancher
     cluster không đổi gì → mapping vẫn còn nguyên (2 kịch bản từng làm mất dữ liệu trước khi fix).
+    **Gap đã phát hiện + fix (2026-08-28):** mỗi service trong `services` chỉ khai `{deployment}` —
+    `node index.js --configmap` (xem root `CLAUDE.md`) đọc thêm `services.<key>.configMap` (tên
+    ConfigMap thật, vd `r3svc-hue.env`) nhưng field này CHƯA từng được ghi cho `DVCCD_HUE`/`DVCCD_DEMO`
+    → mọi lần `--configmap` cho `r3svc`/`r3web` báo "chưa khai configMap". Backend/route
+    `POST /settings/namespace-groups` **đã chấp nhận sẵn** field `configMap` tuỳ ý trong object mỗi
+    service (không cần đổi schema, `services` lưu dạng JSON tự do) — chỉ thiếu UI nhập + dữ liệu chưa
+    từng được ghi. Đã vá bằng cách gọi thẳng `POST /settings/namespace-groups` bổ sung
+    `r3svc.configMap="r3svc-hue.env"`/`r3web.configMap="r3web-hue.env"` (Huế) và
+    `r3web.configMap="r3web.env"` (demo, `r3svc` demo không dùng ConfigMap — cấu hình qua default
+    trong `application.properties`, không set field này). UI settings modal (mục "Service →
+    Deployment") vẫn CHƯA có ô nhập `configMap` — cần bổ sung ô này nếu muốn thao tác qua UI thay vì
+    gọi API trực tiếp.
 - [ ] **Phase 4** — First-run wizard với progress bar % (`window.emit("wizard-progress", ...)`) —
   phần lớn hạ tầng (SQLite/keychain/import) đã có sẵn từ Phase 3, chỉ còn thiếu UI wizard bọc ngoài.
 - [ ] **Phase 5** — `tauri-plugin-dialog` thay hẳn `scripts/lib/browse-directory.js`/`config-info.js`
@@ -739,6 +777,100 @@ trên app `.deb`/WebKitGTK thật** — theo tiền lệ đã ghi nhiều lần 
 theo srs/nangcapk8sql/v1.md"...), UI mới cần rebuild + cài lại rồi tự tay xác nhận trên app thật
 trước khi coi là hoàn tất, Playwright/Chromium chỉ xác nhận đúng luồng logic.
 
+## Hardening theo audit SmartIR (2026-08-20) — không phải bug, phòng hờ
+
+Máy dev cài EDR nội bộ VNPT (SmartIR/`/etc/EPR`) — `procmon_blacklist.json` ghi log
+`CommandLine` (không phải env var) mỗi lần chạy `bash/ssh/nc/nmap/...`, log này world-readable
+(`/etc/EPR/log/procmon.log`). k8sql không có process nào trong danh sách này chạy local với
+secret trong tham số dòng lệnh (DB tunnel dùng exec-relay qua K8s API, secret không truyền qua
+CLI arg — xem "Đọc thẳng SQLite lúc runtime" ở trên). Điểm duy nhất spawn `bash` local là
+`scheduleRespawn()` (`server/src/selfUpdate.ts`, tính năng tự-cập-nhật dev-only) — đã sửa để
+truyền `env` tối thiểu (`PATH`/`HOME`/`DISPLAY`) thay vì kế thừa nguyên `process.env` (vốn chứa
+token/connection-string do `refreshProcessEnvSecrets()` populate), phòng hờ script này về sau bị
+sửa thêm bước dùng tới biến môi trường đó. **Quy ước áp dụng cho mọi `spawn()`/`execFile()` mới
+thêm vào k8sql**: không bao giờ truyền secret qua tham số dòng lệnh (dù có bị SmartIR log hay
+không) — chỉ qua stdin, file tạm quyền hạn hẹp, hoặc `env` truyền tường minh riêng cho child đó.
+
+## MCP server (2026-09-07) — k8sql vừa là MCP server vừa GUI
+
+k8sql giờ expose 1 MCP server (Model Context Protocol) cho AI (Claude Code/Claude Desktop) dùng
+trực tiếp Kubernetes/Rancher + SQL Tool, **song song với vai trò GUI Tauri hiện có** — không phải
+2 app riêng, không phải process riêng.
+
+- **Transport**: Streamable HTTP (`@modelcontextprotocol/sdk`), route `POST/GET/DELETE /mcp` đăng
+  ký qua `registerExtraRoutes` có sẵn trong `bootstrap.ts` (`server/src/mcp/server.ts::
+  registerMcpRoute()`) — cùng bind `127.0.0.1:<port>` với sidecar, KHÔNG mở cổng mới. Stateless (1
+  `McpServer`+`transport` mới cho mỗi request POST, đúng pattern chính thức của SDK cho use-case
+  không cần giữ session giữa các lần gọi — `sessionIdGenerator: undefined`).
+  - **Vì sao không phải process MCP riêng (stdio)**: secret thật (Rancher token, DB connection
+    string) chỉ đọc được qua `native_bridge.rs` (Rust, cần Tauri app đang chạy), populate vào
+    `process.env` của CHÍNH sidecar qua `refreshProcessEnvSecrets()` — 1 tiến trình MCP độc lập
+    (spawn qua `npx`/stdio) không có cách nào lấy được secret đó. Điều kiện tiên quyết: sidecar
+    phải đang chạy (`curl http://127.0.0.1:4210/health`), xem mục "AI dùng k8sql" bên dưới.
+- **Bộ tool**: `server/src/mcp/tools/`
+  - **READ (luôn đăng ký)**: `k8s-read.ts` (list/describe deployments·services·ingresses,
+    read configmap·secret, list/describe pod, search logs), `k8s-meta.ts` (resolve domain,
+    check permissions, diagnose, discovery-reconcile), `sql-read.ts` (list environments·schemas·
+    tables·columns·primary-key, get-autocomplete-schema, `sql_query` — chỉ chạy SELECT/WITH hoặc
+    Mongo read method).
+  - **WRITE (chỉ đăng ký khi `K8SQL_MCP_ALLOW_WRITE=1`)**: `k8s-write.ts` (restart/scale/set-image
+    deployment, update configmap, apply/annotate ingress, delete resource, restart pod),
+    `sql-write.ts` (`sql_mutate` — câu lệnh ghi, vẫn tôn trọng `env.allowWrite` của từng connection
+    y hệt UI). Khi cờ tắt (mặc định), client (`tools/list`) hoàn toàn KHÔNG thấy các tool này tồn
+    tại — không phải chỉ chặn khi gọi.
+  - **`sql_query` (READ) tự chặn statement không phải SELECT/WITH ở tầng tool**
+    (`context.ts::assertReadOnlySql()`) — KHÔNG dựa vào `env.allowWrite` của connection, vì 1
+    connection bật `allowWrite=true` (cấu hình cho UI) sẽ khiến tool READ mặc định vô tình cho
+    phép ghi nếu không tự chặn riêng.
+  - **Không có tool `db_tunnel_open/close` riêng** (quyết định đã chốt với user) — DB tunnel tới
+    pod Postgres/MongoDB được `db.service.js` (gọi bởi `sql_query`/`sql_mutate`/
+    `sql_get_autocomplete_schema`) tự mở ngầm khi cần, AI không cần biết/gọi gì về tunnel.
+  - **Không expose qua MCP**: `/settings/*` (cấu hình Rancher cluster/connection string — nên qua
+    UI có xác nhận rõ ràng), `/internal/*`/`/native/*` (vòng đời ứng dụng), `/provision/*` (tạo
+    mới hạ tầng, rủi ro cao nhất).
+- **Gọi thẳng service legacy** (`require("../../../legacy/services/xxx.service.js")`, cùng process
+  — KHÔNG qua controller vì controller cần `req/res` giả) — `context.ts::callService()` bọc lỗi
+  thống nhất, dịch `AppError.message` (tiếng Việt, có sẵn) thành MCP tool error content.
+- **Khai báo MCP client** (`.mcp.json` cho Claude Code; tương tự `.gemini/settings.json` với key
+  `httpUrl` cho Gemini CLI, `.vscode/mcp.json` với key `servers`/`type:"http"` cho GitHub Copilot):
+  ```json
+  { "mcpServers": { "k8sql": { "type": "http", "url": "http://127.0.0.1:4210/mcp" } } }
+  ```
+  Đổi port trong URL nếu 4210 bị chiếm (Tauri tự dò port khác, xem `ports.rs`).
+- **Bug thật đã gặp + fix (2026-09-07) — `EACCES: permission denied, mkdir '/usr/logs'` khi thao
+  tác BẤT KỲ connection nào trong Object Explorer trên bản `.deb` đã cài** (không xảy ra ở dev
+  server, chỉ lộ ra sau khi đóng gói SEA — user báo qua ảnh chụp GUI thật). Root cause: thêm
+  `const { registerMcpRoute } = require("./mcp/server.ts");` ở TOP-LEVEL của `bootstrap.ts` (cạnh
+  các require khác) — vi phạm ràng buộc có sẵn "`K8SQL_BASE_DIR` PHẢI set trước khi require bất kỳ
+  chuỗi kéo tới `legacy/services`" (đây là lý do `legacy/app` vốn được require LAZY bên trong
+  `main()`, sau dòng set biến — xem comment gốc). `mcp/server.ts` require `mcp/tools/k8s-read.ts`
+  ở top-level, file đó lại require thẳng `legacy/services/*.js` ở top-level — toàn bộ chuỗi này chạy
+  TRƯỚC khi `main()` kịp set `process.env.K8SQL_BASE_DIR`. `legacy/utils/logger.js` tính
+  `logDirectory = path.resolve(getBaseDir(), "logs")` 1 LẦN DUY NHẤT lúc module load (không phải lúc
+  gọi `logOperation()`) — bị cache sai thành `__dirname/..` (SEA: `dirname(execPath)` = `/usr/bin`)
+  → `/usr/logs`, không ghi được (không phải root), lỗi rơi vào MỌI thao tác gọi `logOperation()`
+  (gần như mọi service — 112 lời gọi rải khắp `legacy/services/*.js`). Fix: chuyển
+  `require("./mcp/server.ts")` từ top-level xuống bên trong `main()`, ngay sau dòng require
+  `legacy/app` (cùng chỗ, cùng lý do) — xem `bootstrap.ts` dòng ~69. Đã tự verify root cause bằng
+  script tái hiện độc lập (`require("../legacy/utils/logger.js")` trước/sau khi set
+  `K8SQL_BASE_DIR`, quan sát `operations.log` ghi sai/đúng chỗ tương ứng) trước khi sửa, và verify
+  lại trên bản `.deb` build lại + cài lại thật — `GET /sql/schemas?env=...` (đúng API Object
+  Explorer gọi) chạy thành công, `~/.local/share/com.pvgiang396.k8sql/logs/operations.log` nhận log
+  mới, `/usr/logs` không tồn tại. **Bài học áp dụng cho mọi require mới thêm vào `bootstrap.ts` sau
+  này**: bất kỳ chuỗi require nào (trực tiếp hoặc gián tiếp) chạm tới `legacy/services/**` hoặc
+  `legacy/utils/logger.js` đều phải nằm SAU dòng `process.env.K8SQL_BASE_DIR = dataDir` trong
+  `main()` — không được đặt ở top-level file dù chỉ là 1 dòng import tưởng như vô hại.
+- **Verify đã làm** (dev server `node src/bootstrap.ts` + bản SEA đã build qua `npm run build:sea`,
+  cả 2 đều xác nhận qua `curl` MCP handshake/`tools/list`/`tools/call` thật, không chỉ đọc code):
+  handshake `initialize` OK; `tools/list` mặc định trả đúng 22 tool READ, không có tool WRITE nào;
+  set `K8SQL_MCP_ALLOW_WRITE=1` → 31 tool (22 READ + 9 WRITE); `sql_list_environments` trả đúng
+  dữ liệu SQLite thật (mảng rỗng trên DB test trống); `sql_query` với câu `DELETE` bị chặn đúng
+  message hướng dẫn dùng `sql_mutate`. **Chưa verify**: tự thêm vào `.mcp.json` của 1 session
+  Claude Code thật để gọi tool qua chính client MCP (chỉ mới verify bằng `curl` thủ công theo đúng
+  giao thức JSON-RPC/SSE) — cần user tự làm nếu muốn xác nhận thêm; thao tác ghi thật (WRITE tools)
+  trên Rancher/DB thật chưa được test (đúng tinh thần "chưa test đầy đủ" của team-notes, đây là lý
+  do nhóm WRITE mặc định tắt).
+
 ## AI dùng k8sql
 
 Kiểm tra `curl -s -m 2 http://127.0.0.1:4210/health`. Nếu không phản hồi:
@@ -750,6 +882,12 @@ Kiểm tra `curl -s -m 2 http://127.0.0.1:4210/health`. Nếu không phản hồ
 2. Đợi vài giây rồi `curl` lại `/health`.
 3. Chỉ nhắc user can thiệp tay nếu bước 1 cũng thất bại thật sự (vd không tìm thấy binary `k8sql`
    trong PATH, hoặc không có `/tmp/.X11-unix/X0`/phiên desktop nào đang mở — máy chưa đăng nhập).
+
+**Có tool MCP tương ứng → ưu tiên gọi tool MCP thay vì gọi thẳng REST** (xem mục "MCP server" ở
+trên) — cùng logic, cùng dữ liệu, không cần tự ghép query string/body JSON. `K8SQL_MCP_ALLOW_WRITE`
+mặc định TẮT — nếu cần dùng tool ghi (restart/scale/set-image/delete/sql_mutate...) mà thấy tool đó
+không có trong danh sách, set biến này `=1` trước khi khởi động sidecar (`k8sql --tray`/`node
+src/bootstrap.ts`) rồi mới gọi lại, không tự ý coi là bug.
 
 **Bug thật đã gặp — rebuild+reinstall `.deb` KHÔNG tự áp dụng cho tiến trình đang chạy** (2026-08-10,
 user report "vẫn còn lỗi" dù đã fix code + rebuild + `dpkg -i` xong): `dpkg -i` thay file

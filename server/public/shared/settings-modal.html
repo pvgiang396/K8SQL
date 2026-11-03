@@ -1,6 +1,6 @@
 <div class="sm-content">
   <div class="sm-header">
-    <h3 id="smTitle">Cấu hình cài đặt</h3>
+    <h3 id="smTitle">Cấu hình</h3>
     <button type="button" id="smBtnClose" class="sm-close-x" title="Đóng" aria-label="Đóng">✕</button>
   </div>
 
@@ -12,37 +12,85 @@
       </label>
     </div>
 
-    <div class="sm-section" data-section="rancher">
+    <div class="sm-section" data-section="rancher" hidden>
       <div class="sm-section-header">
-        <div class="sm-section-title-wrap">
-          <button type="button" class="sm-section-toggle" data-target="smRancherTableBody" aria-expanded="false" aria-label="Mở danh sách Rancher"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
-          <div class="sm-block-label">Danh sách Rancher</div>
-        </div>
+        <div class="sm-block-label">Danh sách Rancher</div>
         <a href="#" id="smBtnAddCluster" class="sm-btn-add"><span class="sm-icon-plus">+</span>Thêm mới</a>
       </div>
-      <div class="sm-cardlist" id="smRancherTableBody" hidden></div>
+      <div class="sm-table-wrap">
+        <table class="sm-table">
+          <thead>
+            <tr>
+              <th>Mô tả</th>
+              <th>Rancher URL</th>
+              <th>Username</th>
+              <th>Token</th>
+              <th>Cluster ID</th>
+              <th>Rancher Key</th>
+              <th>Thao tác</th>
+            </tr>
+          </thead>
+          <tbody id="smRancherTableBody"></tbody>
+        </table>
+      </div>
     </div>
 
-    <div class="sm-section" data-section="db-env">
+    <div class="sm-section" data-section="db-env" hidden>
       <div class="sm-section-header">
-        <div class="sm-section-title-wrap">
-          <button type="button" class="sm-section-toggle" data-target="smDbEnvTableBody" aria-expanded="false" aria-label="Mở danh sách Connection String"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
-          <div class="sm-block-label">Danh sách Connection String</div>
+        <div class="sm-block-label">Danh sách Connection String</div>
+        <div class="sm-section-actions">
+          <a href="#" id="smBtnExportDb" class="sm-btn-export">Export</a>
+          <a href="#" id="smBtnAddDbEnv" class="sm-btn-add"><span class="sm-icon-plus">+</span>Thêm mới</a>
         </div>
-        <a href="#" id="smBtnAddDbEnv" class="sm-btn-add"><span class="sm-icon-plus">+</span>Thêm mới</a>
       </div>
-      <div class="sm-cardlist" id="smDbEnvTableBody" hidden></div>
+      <div class="sm-table-wrap">
+        <table class="sm-table">
+          <thead>
+            <tr>
+              <th class="sm-col-check"><input type="checkbox" id="smDbEnvSelectAll" title="Chọn tất cả connection đã lưu" /></th>
+              <th>Mô tả</th>
+              <th>URL Key</th>
+              <th>Rancher</th>
+              <th>Project</th>
+              <th>Namespace</th>
+              <th>Connection String</th>
+              <th>DB Host/Port</th>
+              <th>Pod có sẵn</th>
+              <th>Trạng thái</th>
+              <th>Thao tác</th>
+            </tr>
+          </thead>
+          <tbody id="smDbEnvTableBody"></tbody>
+        </table>
+      </div>
     </div>
 
-    <div class="sm-section" data-section="namespace-group">
+    <div class="sm-section" data-section="namespace-group" hidden>
       <div class="sm-section-header">
-        <div class="sm-section-title-wrap">
-          <button type="button" class="sm-section-toggle" data-target="smGroupTableBody" aria-expanded="false" aria-label="Mở danh sách Nhóm Namespace"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></button>
-          <div class="sm-block-label">Danh sách Nhóm Namespace (domain → deployment)</div>
+        <div class="sm-block-label">Danh sách Nhóm Namespace</div>
+        <div class="sm-section-actions">
+          <a href="#" id="smBtnExportGroup" class="sm-btn-export">Export</a>
+          <a href="#" id="smBtnAddGroup" class="sm-btn-add"><span class="sm-icon-plus">+</span>Thêm mới</a>
         </div>
-        <a href="#" id="smBtnAddGroup" class="sm-btn-add"><span class="sm-icon-plus">+</span>Thêm mới</a>
       </div>
-      <div class="sm-cardlist" id="smGroupTableBody" hidden></div>
+      <div class="sm-table-wrap">
+        <table class="sm-table">
+          <thead>
+            <tr>
+              <th class="sm-col-check"><input type="checkbox" id="smGroupSelectAll" title="Chọn tất cả nhóm đã lưu" /></th>
+              <th>Mô tả</th>
+              <th>Tên nhóm</th>
+              <th>Rancher Cluster</th>
+              <th>Project</th>
+              <th>Namespace</th>
+              <th>Domain</th>
+              <th>Service → Deployment</th>
+              <th>Thao tác</th>
+            </tr>
+          </thead>
+          <tbody id="smGroupTableBody"></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="sm-status" id="smStatus"></div>

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS rancher_clusters (
   cluster_id TEXT NOT NULL,
   insecure_tls INTEGER NOT NULL DEFAULT 0,
   description TEXT,
+  username TEXT,
   secret_ref TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -97,6 +98,11 @@ function getDb(): InstanceType<typeof DatabaseSync> {
   const namespaceGroupCols = db.prepare("PRAGMA table_info(namespace_groups)").all() as { name: string }[];
   if (!namespaceGroupCols.some((c) => c.name === "project_id")) {
     db.exec("ALTER TABLE namespace_groups ADD COLUMN project_id TEXT");
+  }
+
+  const rancherCols = db.prepare("PRAGMA table_info(rancher_clusters)").all() as { name: string }[];
+  if (!rancherCols.some((c) => c.name === "username")) {
+    db.exec("ALTER TABLE rancher_clusters ADD COLUMN username TEXT");
   }
 
   const existing = db.prepare("SELECT value FROM app_settings WHERE key = 'schemaVersion'").get();

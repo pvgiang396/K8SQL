@@ -7,6 +7,8 @@ const rancherClient = require("./rancher.client");
 const { getBaseDir } = require("../utils/base-dir");
 const settingsRepo = require("../../src/config/repository/settingsRepo.ts");
 const { refreshProcessEnvSecrets } = require("../../src/secrets/envShim.ts");
+const { migrateRancherClusterKeys } = require("../../src/migration/migrateRancherKeys.ts");
+const { tokenIdPrefix } = require("../../src/config/rancherKey.ts");
 
 const ROOT_DIR = getBaseDir();
 
@@ -35,6 +37,7 @@ function getCurrentInstallInfo() {
 // service" để đọc giá trị mới, chỉ cần ghi xong + materialize).
 async function applySettings({ values }) {
   await settingsRepo.applySecretValues(values || {});
+  await migrateRancherClusterKeys();
   await refreshProcessEnvSecrets();
 
   logOperation({ resource: "settings", operation: "apply", success: true });
@@ -47,12 +50,15 @@ async function applySettings({ values }) {
 // dụng cho dbEnvVars.
 function listRancherClusters() {
   return settingsRepo.listRancherClusters().map((cluster) => ({
+    id: cluster.id,
     name: cluster.name,
     rancherUrl: cluster.rancherUrl,
     clusterId: cluster.clusterId,
     insecureTLS: Boolean(cluster.insecureTLS),
     tokenEnvVar: cluster.tokenEnvVar,
     description: cluster.description || "",
+    username: cluster.username || "",
+    tokenPrefix: tokenIdPrefix(process.env[cluster.tokenEnvVar]),
     hasValue: Boolean(process.env[cluster.tokenEnvVar])
   }));
 }
@@ -86,9 +92,10 @@ async function saveRancherClusters(clusters) {
   }
 
   await settingsRepo.upsertRancherClusters(clusters);
+  const renamed = await migrateRancherClusterKeys();
   await refreshProcessEnvSecrets();
 
-  return { message: "Đã lưu danh sách Rancher cluster." };
+  return { message: "Đã lưu danh sách Rancher cluster.", renamed, clusters: listRancherClusters() };
 }
 
 // Không trả connectionStringEnvVar thật/secret — chỉ metadata + hasValue.
@@ -150,7 +157,7 @@ async function saveDbEnvironments(environments) {
   await settingsRepo.upsertDbEnvironments(environments);
   await refreshProcessEnvSecrets();
 
-  return { message: "Đã lưu danh sách connection string." };
+  return { message: "Đã lưu danh sách connection string.", environments: listDbEnvironments() };
 }
 
 // revealRancherToken/revealDbEnvironmentValue — CHỈ 2 chỗ trong toàn bộ service này trả giá trị

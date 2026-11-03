@@ -11,9 +11,18 @@ const path: typeof import("node:path") = require("node:path");
 const { getDb } = require("./config/db.ts");
 const { refreshProcessEnvSecrets } = require("./secrets/envShim.ts");
 const { importDbEnvironmentsExport } = require("./migration/importFromK8sctl.ts");
+const { migrateRancherClusterKeys } = require("./migration/migrateRancherKeys.ts");
+const { migrateDbEnvKeys } = require("./migration/migrateDbEnvKeys.ts");
 const keychainClient = require("./secrets/keychainClient.ts");
 const { runSelfUpdate } = require("./selfUpdate.ts");
 const { clearAllConfig } = require("./clearConfig.ts");
+// registerMcpRoute KHÔNG require ở top-level (khác các dòng trên) — mcp/server.ts kéo theo
+// mcp/tools/*.ts require thẳng legacy/services/*.js, mà legacy service (qua utils/logger.js) tính
+// path log 1 LẦN lúc module load dựa vào K8SQL_BASE_DIR. Require ở đây (top-level, chạy trước
+// main()) sẽ cache sai path đó thành __dirname/.. (= "/usr" trên bản SEA đã cài) TRƯỚC khi main()
+// kịp set biến — bug thật đã gặp: "EACCES: permission denied, mkdir '/usr/logs'" khi gọi bất kỳ
+// service nào dùng logOperation(). Fix: require lazy bên trong main(), SAU dòng set
+// K8SQL_BASE_DIR, đúng lý do "legacy/app" cũng được require lazy ở dưới.
 
 function readArg(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
@@ -54,10 +63,14 @@ async function main() {
   process.env.K8SQL_BASE_DIR = dataDir;
 
   getDb(); // đảm bảo schema SQLite đã tồn tại trước khi đọc.
+  await migrateRancherClusterKeys();
+  await migrateDbEnvKeys();
   await refreshProcessEnvSecrets();
 
   // eslint-disable-next-line global-require
   const { createApp } = require("../legacy/app");
+  // eslint-disable-next-line global-require
+  const { registerMcpRoute } = require("./mcp/server.ts");
 
   const port = Number(readArg("port") || process.env.PORT || 4210);
   const host = readArg("host") || process.env.HOST || "127.0.0.1";
@@ -74,6 +87,8 @@ async function main() {
           // SQLite vừa đổi — refresh process.env NGAY để secret mới đọc được mà không cần restart
           // sidecar (legacy/services giờ đọc structure trực tiếp từ SQLite mỗi lần gọi, chỉ secret
           // qua process.env mới cần refresh tường minh).
+          await migrateRancherClusterKeys();
+          await migrateDbEnvKeys();
           await refreshProcessEnvSecrets();
           res.json({ success: true, data: summary });
         } catch (err) {
@@ -122,6 +137,11 @@ async function main() {
           res.status(500).json({ success: false, message: (err as Error).message });
         }
       });
+
+      // MCP server cho AI (Claude Code/Claude Desktop) — xem src/mcp/server.ts + k8sql/CLAUDE.md
+      // mục "MCP server" cho quyết định kiến trúc (route HTTP trong CHÍNH sidecar này, không phải
+      // process riêng, vì secret thật chỉ có trong process.env của tiến trình đang chạy).
+      registerMcpRoute(expressApp);
     },
   });
 

@@ -11,11 +11,13 @@ const keychainClient = require("../../secrets/keychainClient.ts");
 const { deriveTokenEnvVar, deriveConnStringEnvVar } = require("../../secrets/envShim.ts");
 
 interface RancherClusterInput {
+  id?: number;
   name: string;
   rancherUrl: string;
   clusterId: string;
   insecureTLS?: boolean;
   description?: string;
+  username?: string;
 }
 
 interface NamespaceGroupDomainInput {
@@ -36,12 +38,14 @@ interface NamespaceGroupInput {
 }
 
 interface RancherClusterJson {
+  id: number;
   name: string;
   rancherUrl: string;
   clusterId: string;
   tokenEnvVar: string;
   insecureTLS: boolean;
   description: string;
+  username: string;
 }
 
 interface DbEnvironmentJson {
@@ -72,8 +76,43 @@ interface DbEnvironmentInput {
   dbPort?: string | number;
   projectId?: string;
   existingPodName?: string;
+  expectedExistingPodName?: string | null;
   allowWrite?: boolean;
   engine?: string;
+}
+
+async function moveRancherSecretRef(
+  db: ReturnType<typeof getDb>,
+  row: { id: number; secret_ref: string },
+  newName: string
+): Promise<void> {
+  const newSecretRef = `rancher:${newName}:token`;
+  if (newSecretRef === row.secret_ref) return;
+  let token: string | undefined;
+  try {
+    token = await keychainClient.getSecret(row.secret_ref);
+  } catch {
+    return;
+  }
+  if (!token) return;
+  try {
+    await keychainClient.setSecret(newSecretRef, token);
+    db.prepare("UPDATE rancher_clusters SET secret_ref = ? WHERE id = ?").run(newSecretRef, row.id);
+    await keychainClient.deleteSecret(row.secret_ref).catch(() => {});
+  } catch {
+    // Tên đã đổi; secret_ref cũ vẫn đọc được token.
+  }
+}
+
+function findExistingCluster(
+  c: RancherClusterInput,
+  existing: { id: number; name: string; secret_ref: string }[]
+): { id: number; name: string; secret_ref: string } | undefined {
+  if (c.id != null && Number.isFinite(Number(c.id))) {
+    const byId = existing.find((e) => e.id === Number(c.id));
+    if (byId) return byId;
+  }
+  return existing.find((e) => e.name === c.name);
 }
 
 async function upsertRancherClusters(clusters: RancherClusterInput[]): Promise<void> {
@@ -83,10 +122,17 @@ async function upsertRancherClusters(clusters: RancherClusterInput[]): Promise<v
     name: string;
     secret_ref: string;
   }[];
-  const incomingNames = new Set(clusters.map((c) => c.name));
+
+  // Khớp theo id SQLite (đổi Rancher Key/username không được hiểu thành xoá+tạo mới — FK
+  // db_environments/namespace_groups trỏ id số). Entry mới không có id thì khớp theo name.
+  const keepIds = new Set<number>();
+  for (const c of clusters) {
+    const found = findExistingCluster(c, existing);
+    if (found) keepIds.add(found.id);
+  }
 
   for (const row of existing) {
-    if (!incomingNames.has(row.name)) {
+    if (!keepIds.has(row.id)) {
       db.prepare("DELETE FROM rancher_clusters WHERE id = ?").run(row.id);
       // best-effort — xoá metadata dù keychain lỗi vẫn ưu tiên phản ánh đúng ý user (bỏ cluster
       // này), secret mồ côi trong keychain không gây hại (chỉ tốn 1 entry không dùng tới).
@@ -95,17 +141,29 @@ async function upsertRancherClusters(clusters: RancherClusterInput[]): Promise<v
   }
 
   for (const c of clusters) {
-    const found = existing.find((e) => e.name === c.name);
+    const username = String(c.username || "").trim();
+    const found = findExistingCluster(c, existing);
     if (found) {
+      if (c.name !== found.name) {
+        const clash = db.prepare("SELECT id FROM rancher_clusters WHERE name = ? AND id != ?").get(c.name, found.id) as
+          | { id: number }
+          | undefined;
+        if (clash) {
+          throw new Error(`Rancher Key trùng lặp: "${c.name}".`);
+        }
+      }
       db.prepare(
-        `UPDATE rancher_clusters SET rancher_url=?, cluster_id=?, insecure_tls=?, description=?, updated_at=datetime('now') WHERE id=?`
-      ).run(c.rancherUrl, c.clusterId, c.insecureTLS ? 1 : 0, c.description || "", found.id);
+        `UPDATE rancher_clusters SET name=?, rancher_url=?, cluster_id=?, insecure_tls=?, description=?, username=?, updated_at=datetime('now') WHERE id=?`
+      ).run(c.name, c.rancherUrl, c.clusterId, c.insecureTLS ? 1 : 0, c.description || "", username, found.id);
+      if (c.name !== found.name) {
+        await moveRancherSecretRef(db, found, c.name);
+      }
     } else {
       const secretRef = `rancher:${c.name}:token`;
       db.prepare(
-        `INSERT INTO rancher_clusters (name, rancher_url, cluster_id, insecure_tls, description, secret_ref)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(c.name, c.rancherUrl, c.clusterId, c.insecureTLS ? 1 : 0, c.description || "", secretRef);
+        `INSERT INTO rancher_clusters (name, rancher_url, cluster_id, insecure_tls, description, username, secret_ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(c.name, c.rancherUrl, c.clusterId, c.insecureTLS ? 1 : 0, c.description || "", username, secretRef);
     }
   }
 }
@@ -139,7 +197,11 @@ async function upsertDbEnvironments(environments: DbEnvironmentInput[]): Promise
     if (found) {
       db.prepare(
         `UPDATE db_environments SET description=?, mode=?, domain=?, rancher_cluster_id=?, namespace=?,
-           db_host=?, db_port=?, project_id=?, existing_pod_name=?, allow_write=?, engine=?,
+           db_host=?, db_port=?, project_id=?,
+           existing_pod_name=CASE WHEN ?=1 AND ? IS ? AND mode IS ?
+             AND rancher_cluster_id IS ? AND namespace IS ? AND db_host IS ?
+             AND db_port IS ? AND project_id IS ? AND engine IS ? THEN existing_pod_name ELSE ? END,
+           allow_write=?, engine=?,
            updated_at=datetime('now')
          WHERE id=?`
       ).run(
@@ -151,6 +213,16 @@ async function upsertDbEnvironments(environments: DbEnvironmentInput[]): Promise
         e.dbHost || null,
         e.dbPort !== undefined ? Number(e.dbPort) : null,
         e.projectId || null,
+        e.expectedExistingPodName !== undefined ? 1 : 0,
+        e.expectedExistingPodName || null,
+        e.existingPodName || null,
+        e.mode || null,
+        rancherClusterId,
+        e.namespace || null,
+        e.dbHost || null,
+        e.dbPort !== undefined ? Number(e.dbPort) : null,
+        e.projectId || null,
+        e.engine || null,
         e.existingPodName || null,
         e.allowWrite ? 1 : 0,
         e.engine || null,
@@ -284,15 +356,25 @@ function listNamespaceGroups(): NamespaceGroupInput[] {
 function listRancherClusters(): RancherClusterJson[] {
   const db = getDb();
   const rows = db
-    .prepare("SELECT name, rancher_url, cluster_id, insecure_tls, description FROM rancher_clusters")
-    .all() as { name: string; rancher_url: string; cluster_id: string; insecure_tls: number; description: string | null }[];
+    .prepare("SELECT id, name, rancher_url, cluster_id, insecure_tls, description, username FROM rancher_clusters")
+    .all() as {
+    id: number;
+    name: string;
+    rancher_url: string;
+    cluster_id: string;
+    insecure_tls: number;
+    description: string | null;
+    username: string | null;
+  }[];
   return rows.map((c) => ({
+    id: c.id,
     name: c.name,
     rancherUrl: c.rancher_url,
     clusterId: c.cluster_id,
     tokenEnvVar: deriveTokenEnvVar(c.name),
     insecureTLS: Boolean(c.insecure_tls),
     description: c.description || "",
+    username: c.username || "",
   }));
 }
 
@@ -348,6 +430,22 @@ function setDbEnvironmentMongoDriver(name: string, mongoDriver: string): void {
   );
 }
 
+function replaceDbEnvironmentPod(expected: DbEnvironmentInput, podName: string): boolean {
+  const db = getDb();
+  const result = db.prepare(
+    `UPDATE db_environments SET existing_pod_name = ?, updated_at = datetime('now')
+     WHERE name = ? AND mode IS ? AND existing_pod_name IS ? AND namespace IS ?
+       AND db_host IS ? AND db_port IS ? AND project_id IS ? AND engine IS ?
+       AND rancher_cluster_id IS (SELECT id FROM rancher_clusters WHERE name = ?)`
+  ).run(
+    podName, expected.name, expected.mode || null, expected.existingPodName || null,
+    expected.namespace || null, expected.dbHost || null,
+    expected.dbPort != null ? Number(expected.dbPort) : null, expected.projectId || null,
+    expected.engine || null, expected.rancherKey || null
+  );
+  return Number(result.changes) === 1;
+}
+
 // applySettings({values}) gửi lên map {<tokenEnvVar hoặc connectionStringEnvVar đã derive>: <secret
 // thật>} — khớp NGƯỢC lại đúng cluster/db_environment nào bằng cách tự derive lại tên biến từ
 // name mỗi row (deriveTokenEnvVar/deriveConnStringEnvVar, CÙNG công thức envShim.ts dùng để
@@ -386,4 +484,5 @@ module.exports = {
   listRancherClusters,
   listDbEnvironments,
   setDbEnvironmentMongoDriver,
+  replaceDbEnvironmentPod,
 };

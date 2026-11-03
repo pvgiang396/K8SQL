@@ -105,6 +105,7 @@ app.get("/sql/environments", dbEnvironmentController.listEnvironments);
 app.get("/sql/schemas", dbSchemaController.listSchemas);
 app.get("/sql/tables", dbSchemaController.listTables);
 app.get("/sql/columns", dbSchemaController.listColumns);
+app.get("/sql/primary-key", dbSchemaController.getPrimaryKey);
 app.get("/sql/autocomplete-schema", dbSchemaController.getAutocompleteSchema);
 app.post("/sql/query", dbQueryController.query);
 app.get("/sql/config/export", dbConfigController.exportConfig);
@@ -120,6 +121,8 @@ app.post(
 // exportConfigToPath/importConfigFromPath trong db-config.controller.js.
 app.post("/sql/config/export-to-path", dbConfigController.exportConfigToPath);
 app.post("/sql/config/import-from-path", dbConfigController.importConfigFromPath);
+app.post("/sql/config/export-selection", dbConfigController.exportSelection);
+app.post("/sql/config/export-selection-to-path", dbConfigController.exportSelectionToPath);
 
 app.get("/settings/current", settingsController.getCurrentInstallInfo);
 app.post("/settings/apply", settingsController.applySettings);

@@ -43,6 +43,16 @@ async function listColumns(req, res, next) {
   }
 }
 
+async function getPrimaryKey(req, res, next) {
+  try {
+    requireQueryFields(req.query, ["env", "schema", "table"]);
+    const data = await dbService.getPrimaryKeyColumns(req.query.env, req.query.schema, req.query.table);
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function getAutocompleteSchema(req, res, next) {
   try {
     requireQueryFields(req.query, ["env"]);
@@ -57,5 +67,6 @@ module.exports = {
   listSchemas,
   listTables,
   listColumns,
+  getPrimaryKey,
   getAutocompleteSchema
 };

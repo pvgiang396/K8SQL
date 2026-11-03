@@ -29,7 +29,7 @@ function withTempSqlitePath(fn) {
 // rancher-clusters.json", xem srs/LoiImportK8sql/mota.md). `data` mang cả field "token" thật —
 // nhất quán với "connectionString" thật trong db_environments (đánh đổi bảo mật đã chấp nhận, xem
 // db-config.service.js).
-function encodeToSqliteBuffer({ environments, rancherClusters }) {
+function encodeToSqliteBuffer({ environments, rancherClusters, namespaceGroups }) {
   return withTempSqlitePath((tmpPath) => {
     const db = new DatabaseSync(tmpPath);
     try {
@@ -44,11 +44,40 @@ function encodeToSqliteBuffer({ environments, rancherClusters }) {
       for (const cluster of rancherClusters || []) {
         insertCluster.run(cluster.name, JSON.stringify(cluster));
       }
+
+      // namespace_groups chỉ có khi caller chủ đích xuất (export đầy đủ hoặc export lựa chọn).
+      // File cũ không có bảng này — decode coi như không đụng nhóm namespace lúc import.
+      if (namespaceGroups !== undefined) {
+        db.exec("CREATE TABLE namespace_groups (name TEXT PRIMARY KEY, data TEXT NOT NULL)");
+        const insertGroup = db.prepare("INSERT INTO namespace_groups (name, data) VALUES (?, ?)");
+        for (const group of namespaceGroups) {
+          insertGroup.run(group.name, JSON.stringify(group));
+        }
+      }
     } finally {
       db.close();
     }
     return fs.readFileSync(tmpPath);
   });
+}
+
+// Chọn connection / nhóm namespace đã tick, rồi kéo Rancher cha mà chúng trỏ tới.
+// Không đưa Rancher không được tham chiếu. Nhóm không có rancherCluster (kubeconfig) vẫn được xuất.
+function selectExportBundle(all, { environmentNames, namespaceGroupNames }) {
+  const envNames = new Set(environmentNames || []);
+  const groupNames = new Set(namespaceGroupNames || []);
+  const environments = (all.environments || []).filter((env) => env && envNames.has(env.name));
+  const namespaceGroups = (all.namespaceGroups || []).filter((group) => group && groupNames.has(group.name));
+  const rancherKeys = new Set();
+  for (const env of environments) {
+    if (env.rancherKey) rancherKeys.add(env.rancherKey);
+  }
+  for (const group of namespaceGroups) {
+    const key = group.rancherCluster || group.rancherKey;
+    if (key) rancherKeys.add(key);
+  }
+  const rancherClusters = (all.rancherClusters || []).filter((cluster) => cluster && rancherKeys.has(cluster.name));
+  return { environments, rancherClusters, namespaceGroups };
 }
 
 function decodeFromSqliteBuffer(buffer) {
@@ -66,14 +95,19 @@ function decodeFromSqliteBuffer(buffer) {
       } catch {
         clusterRows = [];
       }
+      var groupTable = db.prepare(
+        "SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'namespace_groups'"
+      ).get();
+      var groupRows = groupTable ? db.prepare("SELECT data FROM namespace_groups").all() : null;
     } finally {
       db.close();
     }
     return {
       environments: envRows.map((row) => JSON.parse(row.data)),
-      rancherClusters: clusterRows.map((row) => JSON.parse(row.data))
+      rancherClusters: clusterRows.map((row) => JSON.parse(row.data)),
+      namespaceGroups: groupRows ? groupRows.map((row) => JSON.parse(row.data)) : undefined
     };
   });
 }
 
-module.exports = { encodeToSqliteBuffer, decodeFromSqliteBuffer };
+module.exports = { encodeToSqliteBuffer, decodeFromSqliteBuffer, selectExportBundle };

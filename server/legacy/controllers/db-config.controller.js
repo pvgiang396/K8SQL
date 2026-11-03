@@ -6,13 +6,29 @@ const { encodeToSqliteBuffer, decodeFromSqliteBuffer } = require("../services/sq
 
 // Export/import trả/nhận file .sqlite nhị phân (srs/nangcapk8sql/v1.md #2, đổi từ .json trước đây)
 // — không dùng envelope { success, data } JSON như các route khác vì body là binary.
+function sendSqlite(res, bundle, filename) {
+  const buffer = encodeToSqliteBuffer(bundle);
+  res.set("Content-Type", "application/octet-stream");
+  res.set("Content-Disposition", `attachment; filename="${filename}"`);
+  res.send(buffer);
+}
+
 async function exportConfig(_req, res, next) {
   try {
-    const { environments, rancherClusters } = dbConfigService.exportConfig();
-    const buffer = encodeToSqliteBuffer({ environments, rancherClusters });
-    res.set("Content-Type", "application/octet-stream");
-    res.set("Content-Disposition", 'attachment; filename="k8sql-config.sqlite"');
-    res.send(buffer);
+    sendSqlite(res, dbConfigService.exportConfig(), "k8sql-config.sqlite");
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function exportSelection(req, res, next) {
+  try {
+    const { environmentNames, namespaceGroupNames } = req.body || {};
+    sendSqlite(
+      res,
+      dbConfigService.exportSelection({ environmentNames, namespaceGroupNames }),
+      "k8sql-config-selection.sqlite"
+    );
   } catch (error) {
     next(error);
   }
@@ -40,12 +56,15 @@ async function exportConfigToPath(req, res, next) {
       res.status(400).json({ success: false, message: "Thiếu tham số path." });
       return;
     }
-    const { environments, rancherClusters } = dbConfigService.exportConfig();
-    const buffer = encodeToSqliteBuffer({ environments, rancherClusters });
-    fs.writeFileSync(targetPath, buffer);
+    const bundle = dbConfigService.exportConfig();
+    fs.writeFileSync(targetPath, encodeToSqliteBuffer(bundle));
     res.json({
       success: true,
-      data: { environmentsCount: environments.length, rancherClustersCount: rancherClusters.length }
+      data: {
+        environmentsCount: bundle.environments.length,
+        rancherClustersCount: bundle.rancherClusters.length,
+        namespaceGroupsCount: bundle.namespaceGroups.length
+      }
     });
   } catch (error) {
     next(error);
@@ -68,9 +87,33 @@ async function importConfigFromPath(req, res, next) {
   }
 }
 
+async function exportSelectionToPath(req, res, next) {
+  try {
+    const { path: targetPath, environmentNames, namespaceGroupNames } = req.body || {};
+    if (!targetPath) {
+      res.status(400).json({ success: false, message: "Thiếu tham số path." });
+      return;
+    }
+    const bundle = dbConfigService.exportSelection({ environmentNames, namespaceGroupNames });
+    fs.writeFileSync(targetPath, encodeToSqliteBuffer(bundle));
+    res.json({
+      success: true,
+      data: {
+        environmentsCount: bundle.environments.length,
+        rancherClustersCount: bundle.rancherClusters.length,
+        namespaceGroupsCount: bundle.namespaceGroups.length
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   exportConfig,
+  exportSelection,
   importConfig,
   exportConfigToPath,
+  exportSelectionToPath,
   importConfigFromPath
 };

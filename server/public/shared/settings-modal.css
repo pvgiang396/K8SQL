@@ -668,6 +668,128 @@ a.sm-btn-add-sub:hover {
   gap: 8px;
 }
 
+.sm-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.sm-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.sm-section[hidden] { display: none; }
+.sm-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+a.sm-btn-export {
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+a.sm-btn-export:hover { text-decoration: underline; }
+a.sm-btn-export.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+  cursor: default;
+}
+.sm-table-wrap { overflow: auto; }
+.sm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.sm-table th,
+.sm-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.sm-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-alt);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.sm-col-check { width: 36px; text-align: center; }
+.sm-cell-check { text-align: center; width: 36px; }
+.sm-cell-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 280px;
+}
+.sm-secret-view {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 100%;
+}
+.sm-secret-text { word-break: break-all; }
+button.sm-secret-eye {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+button.sm-secret-eye:hover { color: var(--text); }
+button.sm-secret-eye svg { width: 16px; height: 16px; }
+button.sm-secret-eye:disabled { cursor: wait; opacity: 0.6; }
+.sm-table td input[type="text"],
+.sm-table td input[type="password"],
+.sm-table td select,
+.sm-table .sm-searchable-select {
+  width: 100%;
+  min-width: 140px;
+}
+.sm-table td .sm-password-group {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+.sm-table td .sm-password-group input[type="text"],
+.sm-table td .sm-password-group input[type="password"] {
+  width: 0;
+  min-width: 0;
+  flex: 1 1 0;
+}
+.sm-table .sm-readonly-text { padding-top: 8px; }
+.sm-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+a.sm-btn-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+a.sm-btn-edit:hover { color: var(--text); }
+a.sm-btn-edit svg { width: 16px; height: 16px; }
+
 /* Dialog xác nhận xoá (confirmDeleteWithKey(), settings-modal.js) — tự chứa, không dùng chung
    .modal-overlay/.modal-box của public/index.html (file này còn dùng độc lập ở scripts/wizard.html
    nên không có 2 class đó). z-index cao hơn mọi thứ khác trong popup Cấu hình (kể cả bản thân

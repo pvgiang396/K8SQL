@@ -102,8 +102,32 @@ async function listColumns(env, schema, table, { page, pageSize } = {}) {
   }
 }
 
+// Phục vụ cột Thao tác (Sửa/Xoá) của GUI trên bảng kết quả — cần PK để build UPDATE/DELETE an toàn
+// (WHERE theo PK, không đoán cột nào "trông giống" khoá). Trả mảng rỗng (không throw) khi bảng không
+// tồn tại/không có PK — FE coi đó là tín hiệu "không xác định được PK" để tự ẩn Sửa/Xoá.
+async function getPrimaryKeyColumns(env, schema, table) {
+  const pool = await getPool(env);
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      `SELECT a.attname AS column_name
+       FROM pg_index i
+       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+       WHERE i.indrelid = ($1 || '.' || $2)::regclass AND i.indisprimary
+       ORDER BY array_position(i.indkey, a.attnum)`,
+      [schema, table]
+    );
+    return result.rows.map((row) => row.column_name);
+  } catch {
+    return [];
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   listSchemas,
   listTables,
-  listColumns
+  listColumns,
+  getPrimaryKeyColumns
 };

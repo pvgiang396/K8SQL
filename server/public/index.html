@@ -61,6 +61,9 @@
     border-bottom: 1px solid var(--border);
     background: var(--bg-alt);
     flex: 0 0 auto;
+    /* Nằm trên popup cấu hình (z-index 100) để menu bánh răng vẫn mở được khi popup đang hiện. */
+    position: relative;
+    z-index: 250;
   }
   header .header-left {
     /* +5px = đúng width `.divider-v` (#dividerH, thanh chia dọc) — để border-right dưới đây thẳng
@@ -267,6 +270,8 @@
      "header .icon-btn img" đã có sẵn (không cần CSS riêng nữa). .tab-new-wrap chỉ còn cần
      position:relative để neo .dropdown-menu. */
   .tab-new-wrap { position: relative; flex: 0 0 auto; display: flex; align-items: center; }
+  .settings-menu-wrap { position: relative; flex: 0 0 auto; display: flex; align-items: center; }
+  #settingsMenu { left: 0; right: auto; min-width: 230px; z-index: 300; }
   .dropdown-menu {
     position: absolute; top: 100%; right: 0; margin-top: 2px; background: var(--bg);
     border: 1px solid var(--border); border-radius: 5px; box-shadow: 0 4px 12px rgba(0,0,0,.15);
@@ -278,6 +283,9 @@
     padding: 7px 9px; border-radius: 4px; cursor: pointer; font-size: 12.5px; color: var(--text);
   }
   .dropdown-menu button:hover { background: var(--border-soft); }
+  /* Menu chuột phải trên tab — cùng style .dropdown-menu nhưng position:fixed, toạ độ set qua JS
+     theo event.clientX/clientY (không neo theo 1 phần tử cha relative cố định như .tab-new-wrap). */
+  #tabContextMenu { position: fixed; top: 0; left: 0; right: auto; margin-top: 0; }
 
   #editor {
     flex: 0 0 auto; height: var(--editor-height, 320px); min-height: 120px; max-height: 70vh;
@@ -373,15 +381,16 @@
     color: var(--text-dim);
     flex: 0 0 auto;
   }
-  .pager-row .icon-btn { font-size: 13px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+  .pager-row .icon-btn { font-size: 13px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; }
   .pager-row .icon-btn:hover { background: var(--border-soft); }
   .pager-row .icon-btn:disabled { opacity: .4; cursor: default; }
   .pager-row .icon-btn:hover:disabled { background: none; }
 
   /* JSON tree — kết quả query MongoDB (thay bảng khi environment đang chọn là engine "mongo"), xem
      public/vendor/json-tree.js. Mỗi document 1 khối riêng, cách nhau bằng border-bottom. */
-  .jsonResultsWrap { padding: 10px 12px; font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  .json-doc { padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
+  .jsonResultsWrap { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 2px 12px; font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .jsonResultsWrap[hidden] { display: none; }
+  .json-doc { padding: 2px 0; border-bottom: 1px solid var(--border-soft); }
   .json-doc:last-child { border-bottom: none; }
   .json-row { display: flex; align-items: baseline; gap: 2px; white-space: pre; }
   .json-children { margin-left: 18px; }
@@ -397,8 +406,44 @@
   /* Thanh action (view/edit/delete) trên mỗi document Mongo — xem buildDocActionBar()/
      renderResultJsonTree(). Icon xoá/sửa chỉ render khi env.allowWrite=true (xem
      buildDocActionBar()), icon xem luôn có mặt. */
-  .doc-action-bar { display: flex; justify-content: flex-end; gap: 2px; margin-bottom: 2px; }
-  .doc-action-bar .icon-btn { font-size: 12px; padding: 2px 5px; line-height: 1; }
+  .json-doc-header { display: flex; align-items: center; justify-content: space-between; min-height: 18px; }
+  .json-doc-header .json-tree { min-width: 0; }
+  .doc-action-bar { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+  .doc-action-bar .icon-btn { font-size: 12px; padding: 0; line-height: 1; border: none; background: none; cursor: pointer; }
+
+  /* Cột "Thao tác" (Sửa/Xoá) ở bảng kết quả Postgres, ngay sau cột STT — chỉ render khi query xác
+     định được PK 1 bảng duy nhất VÀ env.allowWrite (xem renderResultTable()/extractSingleTable()).
+     Icon SVG stroke=currentColor (không dùng emoji như doc-action-bar Mongo — emoji glyph không đổi
+     màu qua CSS được, đây là lý do 🗑 của Mongo luôn xám mặc định) — Xoá tô đỏ qua .icon-danger,
+     Sửa giữ màu chữ mặc định. */
+  .action-col { white-space: nowrap; }
+  .action-col .icon-btn {
+    border: none; background: none; cursor: pointer; color: var(--text-dim); padding: 3px 4px;
+    line-height: 1; border-radius: 4px; display: inline-flex; align-items: center;
+  }
+  .action-col .icon-btn:hover { background: var(--border-soft); color: var(--text); }
+  .action-col .icon-btn.icon-danger { color: #dc2626; }
+  .action-col .icon-btn.icon-danger:hover { background: #fee2e2; color: #b91c1c; }
+
+  /* Toolbar "+ Thêm dòng" phía trên bảng kết quả Postgres — cùng điều kiện hiện với cột Thao tác. */
+  .result-table-toolbar { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+  .result-table-toolbar .icon-btn {
+    display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--text); cursor: pointer;
+    padding: 5px 10px; font-size: 12.5px;
+  }
+  .result-table-toolbar .icon-btn:hover { background: var(--border-soft); }
+
+  /* Form Thêm/Sửa 1 dòng Postgres (#pgRowEditModal) — field-by-field theo data.fields[] (khác
+     textarea JSON thô của Mongo #docEditModal vì Postgres có schema cột rõ ràng sẵn). */
+  .pg-row-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .pg-row-field label { font-size: 12px; color: var(--text-dim); }
+  .pg-row-field label .pk-badge { font-size: 10px; color: var(--accent); margin-left: 4px; }
+  .pg-row-field input {
+    border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; font-size: 12.5px;
+    background: var(--bg); color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .pg-row-field input:disabled { background: var(--bg-alt); color: var(--text-dim); }
 
   /* Modal "Cấu hình" — markup/CSS/JS thật nằm ở public/shared/settings-modal.* (dùng chung với
      scripts/wizard.html của quickstart, xem k8sctl/CLAUDE.md mục "Settings"), chỉ giữ overlay +
@@ -408,6 +453,9 @@
     display: flex; align-items: center; justify-content: center; z-index: 100;
   }
   .modal-overlay[hidden] { display: none; }
+    /* Header ứng dụng có z-index:250 để nằm trên popup Cấu hình; popup document phóng to
+      phải vượt qua header, nếu không hai nút ở góc trên bị header trong suốt chặn click. */
+    #docEditModal:not([hidden]) { z-index: 300; }
   .modal-box {
     background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 5px; width: 768px; max-width: calc(100vw - 32px);
@@ -416,6 +464,29 @@
     min-height: 270px;
     max-height: calc(100vh - 64px); overflow-y: auto;
     box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  }
+  /* Popup cấu hình (⚙️): full phần cửa sổ phía dưới header, để icon bánh răng vẫn bấm được
+     và mở menu 3 mục. Kích thước khớp cửa sổ chính, không còn hộp 768px ở giữa. */
+  #settingsModal {
+    align-items: stretch;
+    justify-content: stretch;
+    background: var(--bg);
+    left: 0;
+    right: 0;
+    bottom: auto;
+  }
+  #settingsModal .modal-box {
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    max-height: none;
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 
   /* Popup "Xem JSON" (icon trước giá trị JSON trong bảng kết quả query, xem renderResultTable()) —
@@ -474,7 +545,14 @@
     </div>
     <div class="header-right">
       <div class="header-actions">
-        <button id="btnSettings" class="icon-btn" title="Cấu hình">⚙️</button>
+        <div class="settings-menu-wrap">
+          <button id="btnSettings" class="icon-btn" title="Cấu hình" aria-haspopup="menu" aria-expanded="false">⚙️</button>
+          <div id="settingsMenu" class="dropdown-menu" role="menu" hidden>
+            <button type="button" data-settings-section="rancher">Cấu hình rancher</button>
+            <button type="button" data-settings-section="connectstring">Cấu hình connectstring</button>
+            <button type="button" data-settings-section="namespace">Cấu hình nhóm namespace</button>
+          </div>
+        </div>
         <button id="btnUpdate" class="icon-btn" title="Cập nhật ứng dụng">⬇️</button>
         <button id="btnClearConfig" class="icon-btn" title="Làm sạch cấu hình (xoá toàn bộ Rancher cluster/Connection String/Nhóm namespace đã lưu)">🧨</button>
         <span class="divider"></span>
@@ -493,6 +571,9 @@
             <button type="button" data-engine="mongo">Query NoSQL</button>
           </div>
         </div>
+      </div>
+      <div id="tabContextMenu" class="dropdown-menu" hidden>
+        <button type="button" id="btnCloseAllTabs">Đóng tất cả tab</button>
       </div>
       <span class="status" id="toolbarStatus"></span>
     </div>
@@ -525,6 +606,21 @@
       <div class="doc-modal-footer">
         <span class="doc-modal-error" id="docEditError"></span>
         <button type="button" id="docEditSave" class="primary" hidden>Lưu</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-overlay" id="pgRowEditModal" hidden>
+    <div class="modal-box" id="pgRowEditModalBox">
+      <div class="json-view-header">
+        <h3 id="pgRowEditModalTitle">Thêm dòng</h3>
+        <button type="button" id="pgRowEditClose" class="icon-btn" title="Đóng">✕</button>
+      </div>
+      <div class="doc-modal-body">
+        <form id="pgRowEditForm"></form>
+      </div>
+      <div class="doc-modal-footer">
+        <span class="doc-modal-error" id="pgRowEditError"></span>
+        <button type="button" id="pgRowEditSave" class="primary">Lưu</button>
       </div>
     </div>
   </div>
@@ -585,7 +681,7 @@
     const toolbarStatus = document.getElementById("toolbarStatus");
     const settingsModal = document.getElementById("settingsModal");
     const settingsModalMount = document.getElementById("settingsModalMount");
-    let settingsModalInited = false;
+
     const jsonViewModal = document.getElementById("jsonViewModal");
     const jsonViewBody = document.getElementById("jsonViewBody");
     const jsonViewClose = document.getElementById("jsonViewClose");
@@ -618,19 +714,28 @@
     function closeDocEditModal() {
       docEditModal.hidden = true;
       docEditModalBox.classList.remove("fullscreen");
+      docEditFullscreen.title = "Phóng to toàn màn hình";
+      docEditFullscreen.setAttribute("aria-label", "Phóng to toàn màn hình");
       docEditCtx = null;
     }
     docEditFullscreen.addEventListener("click", () => {
-      docEditModalBox.classList.toggle("fullscreen");
+      const fullscreen = docEditModalBox.classList.toggle("fullscreen");
+      docEditFullscreen.title = fullscreen ? "Thu nhỏ" : "Phóng to toàn màn hình";
+      docEditFullscreen.setAttribute("aria-label", docEditFullscreen.title);
     });
     docEditClose.addEventListener("click", closeDocEditModal);
     docEditModal.addEventListener("click", (e) => {
       if (e.target === docEditModal) closeDocEditModal();
     });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !docEditModal.hidden) closeDocEditModal();
+    });
 
     function openDocPopup(tab, row, mode) {
       docEditCtx = { tab, row };
       docEditModalBox.classList.remove("fullscreen");
+      docEditFullscreen.title = "Phóng to toàn màn hình";
+      docEditFullscreen.setAttribute("aria-label", docEditFullscreen.title);
       docEditModalTitle.textContent = mode === "edit" ? "Sửa document" : "Xem document";
       docEditTextarea.value = JSON.stringify(row, null, 2);
       docEditTextarea.readOnly = mode !== "edit";
@@ -765,6 +870,238 @@
 
       return bar;
     }
+
+    // Icon SVG (stroke=currentColor) thay cho emoji dùng ở buildDocActionBar() — emoji glyph có màu
+    // cố định theo font hệ thống, không đổi được qua CSS `color`, nên không dùng được cho yêu cầu
+    // "icon Xoá tô đỏ" của cột Thao tác Postgres bên dưới (xem CSS .action-col .icon-danger).
+    const ICON_EDIT_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
+    const ICON_DELETE_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+    const ICON_PLUS_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+
+    function quoteIdent(name) {
+      return `"${String(name).replace(/"/g, '""')}"`;
+    }
+
+    // Heuristic tối giản — chỉ xác định được "1 bảng duy nhất, không JOIN" thì mới đủ an toàn để
+    // suy ra PK build UPDATE/DELETE (xem services/providers/postgres/schema.js::getPrimaryKeyColumns()).
+    // Query JOIN/nhiều bảng/CTE (WITH) → trả null, cột Thao tác/nút Thêm tự ẩn (renderResultTable()).
+    // Không có prefix schema → mặc định "public" (convention Postgres, KHÔNG phải schema đang chọn
+    // trong Object Explorer — tool này không theo dõi "schema hiện tại" theo tab).
+    function extractSingleTable(sqlText) {
+      const trimmed = String(sqlText || "").trim();
+      if (!/^select\b/i.test(trimmed)) return null; // loại cả WITH/CTE — không suy luận bảng gốc
+      const match = /^select\b[\s\S]*?\bfrom\s+("(?:[^"]|"")+"|[\w]+)(?:\.("(?:[^"]|"")+"|[\w]+))?/i.exec(trimmed);
+      if (!match) return null;
+      const restIdx = match.index + match[0].length;
+      const rest = trimmed.slice(restIdx);
+      const restBeforeClause = rest.split(/\b(where|group\s+by|order\s+by|limit|having)\b/i)[0];
+      if (/\bjoin\b/i.test(restBeforeClause) || /^\s*,/.test(restBeforeClause)) return null;
+      const unquote = (s) => (s ? s.replace(/^"|"$/g, "").replace(/""/g, '"') : s);
+      const first = unquote(match[1]);
+      const second = unquote(match[2]);
+      return second ? { schema: first, table: second } : { schema: "public", table: first };
+    }
+
+    // Cache PK theo "schema.table" trên chính tab — tránh gọi lại /sql/primary-key mỗi lần chuyển
+    // trang (Prev/Next chạy lại cùng 1 câu SQL, cùng bảng). Không có ý nghĩa với tab Mongo.
+    async function resolveResultTableRef(tab, sqlText) {
+      if (tab.engineType === "mongo") {
+        tab.resultTableRef = null;
+        tab.resultPkColumns = [];
+        return;
+      }
+      const ref = extractSingleTable(sqlText);
+      if (!ref) {
+        tab.resultTableRef = null;
+        tab.resultPkColumns = [];
+        tab.resultPkCacheKey = null;
+        return;
+      }
+      tab.resultTableRef = ref;
+      const cacheKey = `${tab.boundEnvName}::${ref.schema}.${ref.table}`;
+      if (tab.resultPkCacheKey === cacheKey) return;
+      tab.resultPkCacheKey = cacheKey;
+      try {
+        tab.resultPkColumns = await fetchJson(
+          `/sql/primary-key?env=${encodeURIComponent(tab.boundEnvName)}&schema=${encodeURIComponent(ref.schema)}&table=${encodeURIComponent(ref.table)}`
+        );
+      } catch {
+        tab.resultPkColumns = [];
+      }
+    }
+
+    function canEditPgResult(tab) {
+      const env = findEnvByName(tab.boundEnvName);
+      return Boolean(env && env.allowWrite && tab.resultTableRef && tab.resultPkColumns?.length > 0);
+    }
+
+    const pgRowEditModal = document.getElementById("pgRowEditModal");
+    const pgRowEditModalTitle = document.getElementById("pgRowEditModalTitle");
+    const pgRowEditForm = document.getElementById("pgRowEditForm");
+    const pgRowEditClose = document.getElementById("pgRowEditClose");
+    const pgRowEditSave = document.getElementById("pgRowEditSave");
+    const pgRowEditError = document.getElementById("pgRowEditError");
+    let pgRowEditCtx = null; // { tab, mode: "add"|"edit", row } — ngữ cảnh popup đang mở, null khi đóng
+
+    function closePgRowEditModal() {
+      pgRowEditModal.hidden = true;
+      pgRowEditCtx = null;
+    }
+    pgRowEditClose.addEventListener("click", closePgRowEditModal);
+    pgRowEditModal.addEventListener("click", (e) => {
+      if (e.target === pgRowEditModal) closePgRowEditModal();
+    });
+
+    // mode "add" → input trống, đủ mọi field trong data.fields. mode "edit" → prefill giá trị dòng,
+    // input tương ứng PK bị disable (đổi PK qua UPDATE dễ gây nhầm lẫn "sửa" thành "tạo dòng mới lệch
+    // khoá" — không cho phép ở v1, muốn đổi PK thì Xoá rồi Thêm lại).
+    function openPgRowEditModal(tab, mode, row) {
+      pgRowEditCtx = { tab, mode, row };
+      pgRowEditModalTitle.textContent = mode === "edit" ? "Sửa dòng" : "Thêm dòng";
+      pgRowEditError.textContent = "";
+      pgRowEditForm.innerHTML = "";
+      const fields = tab.lastResultData?.fields || [];
+      for (const field of fields) {
+        const wrap = document.createElement("div");
+        wrap.className = "pg-row-field";
+        const label = document.createElement("label");
+        label.textContent = field;
+        if (tab.resultPkColumns.includes(field)) {
+          const badge = document.createElement("span");
+          badge.className = "pk-badge";
+          badge.textContent = "PK";
+          label.appendChild(badge);
+        }
+        const input = document.createElement("input");
+        input.type = "text";
+        input.name = field;
+        input.autocomplete = "off";
+        if (mode === "edit") {
+          const value = row[field];
+          input.value = value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+          if (tab.resultPkColumns.includes(field)) input.disabled = true;
+        } else {
+          input.placeholder = "NULL";
+        }
+        wrap.appendChild(label);
+        wrap.appendChild(input);
+        pgRowEditForm.appendChild(wrap);
+      }
+      pgRowEditModal.hidden = false;
+    }
+
+    pgRowEditSave.addEventListener("click", async () => {
+      if (!pgRowEditCtx) return;
+      const { tab, mode, row } = pgRowEditCtx;
+      const env = findEnvByName(tab.boundEnvName);
+      const ref = tab.resultTableRef;
+      if (!env || !ref) return;
+      const tableIdent = `${quoteIdent(ref.schema)}.${quoteIdent(ref.table)}`;
+      const fields = tab.lastResultData?.fields || [];
+      // mode "edit": input rỗng → NULL tường minh (cột đã tồn tại, user chủ động xoá nghĩa là muốn
+      // NULL). mode "add": input rỗng → BỎ HẲN cột khỏi câu INSERT (không gửi NULL) để Postgres tự
+      // áp DEFAULT/sequence — quan trọng cho cột PK serial/identity thường để trống lúc thêm mới; gửi
+      // NULL tường minh sẽ ghi đè DEFAULT và vỡ NOT NULL constraint (không có cách gõ tay "chuỗi rỗng
+      // thật" khác NULL/bỏ trống ở v1 — đủ dùng cho nhu cầu sửa/thêm nhanh 1 dòng, không thay thế 1
+      // form CRUD đầy đủ).
+      const formValues = {};
+      pgRowEditForm.querySelectorAll("input").forEach((input) => {
+        formValues[input.name] = input.value === "" ? null : input.value;
+      });
+
+      pgRowEditError.textContent = "";
+      pgRowEditSave.disabled = true;
+      try {
+        let sql, params;
+        if (mode === "add") {
+          const cols = fields.filter((f) => formValues[f] !== null);
+          const placeholders = cols.map((_, i) => `$${i + 1}`);
+          sql = `INSERT INTO ${tableIdent} (${cols.map(quoteIdent).join(", ")}) VALUES (${placeholders.join(", ")})`;
+          params = cols.map((f) => formValues[f]);
+        } else {
+          const editableCols = fields.filter((f) => !tab.resultPkColumns.includes(f));
+          const setClauses = editableCols.map((f, i) => `${quoteIdent(f)} = $${i + 1}`);
+          const whereClauses = tab.resultPkColumns.map((f, i) => `${quoteIdent(f)} = $${editableCols.length + i + 1}`);
+          sql = `UPDATE ${tableIdent} SET ${setClauses.join(", ")} WHERE ${whereClauses.join(" AND ")}`;
+          params = [...editableCols.map((f) => formValues[f]), ...tab.resultPkColumns.map((f) => row[f])];
+        }
+        await fetchJson("/sql/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ env: env.name, sql, params })
+        });
+        closePgRowEditModal();
+        runQuery(tab, tab.lastResultData?.page || 1, tab.currentQuerySql);
+      } catch (error) {
+        pgRowEditError.textContent = error.message;
+      } finally {
+        pgRowEditSave.disabled = false;
+      }
+    });
+
+    async function confirmDeletePgRow(tab, row) {
+      const ref = tab.resultTableRef;
+      const env = findEnvByName(tab.boundEnvName);
+      if (!ref || !env) return;
+      const keyLabel = tab.resultPkColumns.join(", ");
+      const keyValue = tab.resultPkColumns.map((f) => String(row[f])).join(", ");
+      const ok = await confirmDeleteWithKey({
+        keyLabel,
+        expectedKey: keyValue,
+        itemLabel: `dòng có ${keyLabel} = ${keyValue} của bảng ${ref.schema}.${ref.table}`
+      });
+      if (!ok) return;
+      const tableIdent = `${quoteIdent(ref.schema)}.${quoteIdent(ref.table)}`;
+      const whereClauses = tab.resultPkColumns.map((f, i) => `${quoteIdent(f)} = $${i + 1}`);
+      const sql = `DELETE FROM ${tableIdent} WHERE ${whereClauses.join(" AND ")}`;
+      const params = tab.resultPkColumns.map((f) => row[f]);
+      try {
+        await fetchJson("/sql/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ env: env.name, sql, params })
+        });
+        runQuery(tab, tab.lastResultData?.page || 1, tab.currentQuerySql);
+      } catch (error) {
+        toolbarStatus.textContent = `Lỗi xoá: ${error.message}`;
+      }
+    }
+
+    function buildResultActionCell(tab, row) {
+      const td = document.createElement("td");
+      td.className = "action-col";
+
+      const btnEdit = document.createElement("button");
+      btnEdit.type = "button";
+      btnEdit.className = "icon-btn";
+      btnEdit.title = "Sửa";
+      btnEdit.innerHTML = ICON_EDIT_SVG;
+      btnEdit.addEventListener("click", () => openPgRowEditModal(tab, "edit", row));
+      td.appendChild(btnEdit);
+
+      const btnDelete = document.createElement("button");
+      btnDelete.type = "button";
+      btnDelete.className = "icon-btn icon-danger";
+      btnDelete.title = "Xoá";
+      btnDelete.innerHTML = ICON_DELETE_SVG;
+      btnDelete.addEventListener("click", () => confirmDeletePgRow(tab, row));
+      td.appendChild(btnDelete);
+
+      return td;
+    }
+
+    function buildResultTableToolbar(tab) {
+      const wrap = document.createElement("div");
+      wrap.className = "result-table-toolbar";
+      const btnAdd = document.createElement("button");
+      btnAdd.type = "button";
+      btnAdd.className = "icon-btn";
+      btnAdd.innerHTML = `${ICON_PLUS_SVG}<span>Thêm dòng</span>`;
+      btnAdd.addEventListener("click", () => openPgRowEditModal(tab, "add", null));
+      wrap.appendChild(btnAdd);
+      return wrap;
+    }
+
     const editorContainerEl = document.getElementById("editor");
     const resultsWrapEl = document.getElementById("resultsWrap");
     const editorEmptyEl = document.getElementById("editorEmpty");
@@ -772,6 +1109,8 @@
     const tabListEl = document.getElementById("tabList");
     const btnNewTab = document.getElementById("btnNewTab");
     const newTabMenu = document.getElementById("newTabMenu");
+    const tabContextMenu = document.getElementById("tabContextMenu");
+    const btnCloseAllTabs = document.getElementById("btnCloseAllTabs");
     const dividerH = document.getElementById("dividerH");
     const dividerV = document.getElementById("dividerV");
 
@@ -959,6 +1298,11 @@
         event.stopPropagation();
         closeTab(tab.id);
       });
+      el.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openTabContextMenu(event.clientX, event.clientY);
+      });
       tab.buttonEl = el;
       tab.iconEl = icon;
       tab.labelEl = label;
@@ -1003,6 +1347,7 @@
         id, engineType, boundEnvName, activeMongoDatabase: null, title,
         view: null, editorPaneEl, sqlLanguageCompartment,
         currentQuerySql: null, lastResultData: null,
+        resultTableRef: null, resultPkColumns: [], resultPkCacheKey: null,
         resultEls: null, resultsPaneEl: null, buttonEl: null, iconEl: null, labelEl: null
       };
 
@@ -1110,6 +1455,12 @@
         }
       }
       updateEmptyState();
+    }
+
+    // Đóng mọi tab đang mở, giữ nguyên chủ đích "0 tab → empty-state" của closeTab() (không tự tạo
+    // lại tab mặc định — mặc định SQL sai lệch khi dùng nhiều loại DB, xem comment closeTab()).
+    function closeAllTabs() {
+      [...tabs].forEach((tab) => closeTab(tab.id));
     }
 
     // Luôn mở TAB MỚI, không đè nội dung tab đang active (yêu cầu SRS — khác hành vi cũ chèn thẳng
@@ -1280,6 +1631,7 @@
         try {
           await loadChildren(childrenWrap);
         } catch (error) {
+          loaded = false;
           childrenWrap.innerHTML = `<div class="node-empty">Lỗi: ${error.message}</div>`;
         } finally {
           clearInterval(tickTimer);
@@ -1628,8 +1980,14 @@
       for (const row of data.rows) {
         const docWrap = document.createElement("div");
         docWrap.className = "json-doc";
-        docWrap.appendChild(buildDocActionBar(tab, row));
-        docWrap.appendChild(window.renderJsonTree(row));
+        const header = document.createElement("div");
+        header.className = "json-doc-header";
+        const tree = window.renderJsonTree(row, { expandRoot: false });
+        const rootNode = tree.firstElementChild;
+        header.appendChild(rootNode.firstElementChild);
+        header.appendChild(buildDocActionBar(tab, row));
+        docWrap.appendChild(header);
+        while (rootNode.firstChild) docWrap.appendChild(rootNode.firstChild);
         els.jsonResultsWrap.appendChild(docWrap);
       }
 
@@ -1648,11 +2006,12 @@
       if (tab.engineType === "mongo") {
         renderResultJsonTree(tab, tab.resultEls, data, onPageChange);
       } else {
-        renderResultTable(tab.resultEls, data, onPageChange);
+        renderResultTable(tab, tab.resultEls, data, onPageChange);
       }
     }
 
-    function renderResultTable(els, data, onPageChange) {
+    function renderResultTable(tab, els, data, onPageChange) {
+      const showActions = canEditPgResult(tab);
       const isPaginated = data.totalRows !== undefined;
       els.resultsTableWrap.hidden = false;
       els.jsonResultsWrap.hidden = true;
@@ -1679,6 +2038,12 @@
       sttHead.className = "stt-col";
       sttHead.textContent = "STT";
       headRow.appendChild(sttHead);
+      if (showActions) {
+        const actionHead = document.createElement("th");
+        actionHead.className = "action-col";
+        actionHead.textContent = "Thao tác";
+        headRow.appendChild(actionHead);
+      }
       for (const field of data.fields) {
         const th = document.createElement("th");
         th.textContent = field;
@@ -1695,6 +2060,7 @@
         sttCell.className = "stt-col";
         sttCell.textContent = String(baseIndex + index + 1);
         tr.appendChild(sttCell);
+        if (showActions) tr.appendChild(buildResultActionCell(tab, row));
         for (const field of data.fields) {
           const td = document.createElement("td");
           const value = row[field];
@@ -1726,6 +2092,7 @@
       table.appendChild(tbody);
 
       els.resultsTableWrap.innerHTML = "";
+      if (showActions) els.resultsTableWrap.appendChild(buildResultTableToolbar(tab));
       els.resultsTableWrap.appendChild(table);
       // Phải đo sau khi đã attach vào DOM — scrollWidth/clientWidth của phần tử chưa gắn cây DOM
       // luôn trả 0, không phát hiện được ô nào thật sự tràn chữ.
@@ -1758,17 +2125,22 @@
       const startedAt = performance.now();
 
       try {
-        const data = await fetchJson("/sql/query", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            env: env.name,
-            sql: sqlText,
-            page,
-            pageSize: PAGE_SIZE,
-            ...(env.engine === "mongo" ? { database: tab.activeMongoDatabase } : {})
-          })
-        });
+        const [data] = await Promise.all([
+          fetchJson("/sql/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              env: env.name,
+              sql: sqlText,
+              page,
+              pageSize: PAGE_SIZE,
+              ...(env.engine === "mongo" ? { database: tab.activeMongoDatabase } : {})
+            })
+          }),
+          // Cột Thao tác (Sửa/Xoá) cần biết PK của bảng — chạy song song với query chính, không phụ
+          // thuộc kết quả query nên không cần đợi tuần tự.
+          resolveResultTableRef(tab, sqlText)
+        ]);
         const elapsedMs = Math.round(performance.now() - startedAt);
         tab.lastResultData = data;
         renderResults(tab, data, (newPage) => runQuery(tab, newPage, tab.currentQuerySql));
@@ -1801,6 +2173,9 @@
       toolbarStatus.textContent = "";
       tab.currentQuerySql = null;
       tab.lastResultData = null;
+      tab.resultTableRef = null;
+      tab.resultPkColumns = [];
+      tab.resultPkCacheKey = null;
       // handleTabDocChanged() (gắn trên EditorView.updateListener của chính tab) tự downgrade tab
       // đang bound thành type-only khi dispatch() phía trên làm nội dung rỗng — không lặp lại logic
       // đó ở đây, chỉ dispatch rồi để listener xử lý.
@@ -1832,7 +2207,8 @@
           if (!response.ok || !body?.success) throw new Error(body?.message || `HTTP ${response.status}`);
           const envCount = body?.data?.environmentsCount ?? 0;
           const clusterCount = body?.data?.rancherClustersCount ?? 0;
-          toolbarStatus.textContent = `Đã export cấu hình (${envCount} connection, ${clusterCount} Rancher cluster).`;
+          const groupCount = body?.data?.namespaceGroupsCount ?? 0;
+          toolbarStatus.textContent = `Đã export cấu hình (${envCount} connection, ${clusterCount} Rancher cluster, ${groupCount} nhóm namespace).`;
         } catch (error) {
           toolbarStatus.textContent = `Lỗi export: ${error.message}`;
         }
@@ -1873,7 +2249,8 @@
     function describeImportResult(data) {
       const envCount = data?.dbEnvironmentsImported?.length ?? 0;
       const clusterCount = data?.rancherClustersImported?.length ?? 0;
-      return `Đã import cấu hình (${envCount} connection, ${clusterCount} Rancher cluster).`;
+      const groupCount = data?.namespaceGroupsImported?.length ?? 0;
+      return `Đã import cấu hình (${envCount} connection, ${clusterCount} Rancher cluster, ${groupCount} nhóm namespace).`;
     }
 
     async function applyImportedConfig(bytes) {
@@ -2027,11 +2404,21 @@
       }
     }
 
-    async function openSettingsModal() {
+    function positionSettingsModal() {
+      const headerEl = document.querySelector("body > header");
+      const top = headerEl ? Math.round(headerEl.getBoundingClientRect().bottom) : 0;
+      settingsModal.style.top = `${top}px`;
+      settingsModal.style.height = `calc(100% - ${top}px)`;
+    }
+
+    let settingsController = null;
+
+    async function openSettingsModal(section) {
+      positionSettingsModal();
       settingsModal.hidden = false;
-      if (settingsModalInited) return;
-      settingsModalInited = true;
-      await initSettingsModal({
+      if (!settingsController) {
+        try {
+        settingsController = await initSettingsModal({
         mountEl: settingsModalMount,
         endpoints: {
           fragment: "/shared/settings-modal.html",
@@ -2064,9 +2451,29 @@
           waitForHealthAndReload();
         }
       });
+        } catch (error) {
+          settingsModal.hidden = true;
+          settingsController = null;
+          toolbarStatus.textContent = `Không mở được cấu hình: ${error.message || error}`;
+          return;
+        }
+      }
+      settingsController.showSection(section);
     }
 
-    btnSettings.addEventListener("click", openSettingsModal);
+    const settingsMenu = document.getElementById("settingsMenu");
+    btnSettings.addEventListener("click", (event) => {
+      event.stopPropagation();
+      settingsMenu.hidden = !settingsMenu.hidden;
+      btnSettings.setAttribute("aria-expanded", String(!settingsMenu.hidden));
+    });
+    settingsMenu.addEventListener("click", (event) => {
+      const btn = event.target.closest("button[data-settings-section]");
+      if (!btn) return;
+      settingsMenu.hidden = true;
+      btnSettings.setAttribute("aria-expanded", "false");
+      openSettingsModal(btn.dataset.settingsSection);
+    });
 
     btnExecute.addEventListener("click", () => runQuery(getActiveTab()));
     btnClear.addEventListener("click", clearAll);
@@ -2094,6 +2501,26 @@
       if (!newTabMenu.hidden && !event.target.closest(".tab-new-wrap")) {
         newTabMenu.hidden = true;
       }
+      if (settingsMenu && !settingsMenu.hidden && !event.target.closest(".settings-menu-wrap")) {
+        settingsMenu.hidden = true;
+        btnSettings.setAttribute("aria-expanded", "false");
+      }
+      if (!tabContextMenu.hidden && !event.target.closest("#tabContextMenu")) {
+        tabContextMenu.hidden = true;
+      }
+    });
+
+    // Menu chuột phải trên 1 tab — chỉ 1 mục "Đóng tất cả tab". Global contextmenu listener (cuối
+    // file) chỉ preventDefault native menu, không stopPropagation nên vẫn tới được listener riêng
+    // gắn trên từng .tab-item (xem createTabButton()).
+    function openTabContextMenu(clientX, clientY) {
+      tabContextMenu.style.left = `${clientX}px`;
+      tabContextMenu.style.top = `${clientY}px`;
+      tabContextMenu.hidden = false;
+    }
+    btnCloseAllTabs.addEventListener("click", () => {
+      tabContextMenu.hidden = true;
+      closeAllTabs();
     });
 
     // 2 thanh resize kéo-thả (aside↔query-panel chiều ngang, editor↔results chiều dọc) — set thẳng

@@ -31,7 +31,7 @@
     return { type: "unknown", text: String(value) };
   }
 
-  function buildNode(key, value, depth) {
+  function buildNode(key, value, depth, expandRoot) {
     const desc = describeValue(value);
     const wrap = document.createElement("div");
     const row = document.createElement("div");
@@ -43,7 +43,7 @@
 
       const toggle = document.createElement("span");
       toggle.className = "json-toggle";
-      toggle.textContent = entries.length ? "▾" : " ";
+      toggle.textContent = " ";
       row.appendChild(toggle);
 
       if (key !== undefined) {
@@ -61,14 +61,15 @@
       const childrenWrap = document.createElement("div");
       childrenWrap.className = "json-children";
       for (const [childKey, childValue] of entries) {
-        childrenWrap.appendChild(buildNode(childKey, childValue, depth + 1));
+        childrenWrap.appendChild(buildNode(childKey, childValue, depth + 1, expandRoot));
       }
       wrap.appendChild(childrenWrap);
 
-      // Mặc định chỉ mở sẵn cấp gốc (depth 0) — document lồng sâu không làm cây dài vô tận khi mới render.
-      let expanded = depth < 1;
+      // Popup vẫn mở sẵn cấp gốc; kết quả Mongo truyền false để mặc định thu gọn từng document.
+      let expanded = depth === 0 && expandRoot;
       childrenWrap.style.display = expanded ? "" : "none";
       if (entries.length) {
+        toggle.textContent = expanded ? "▾" : "▸";
         toggle.style.cursor = "pointer";
         toggle.addEventListener("click", () => {
           expanded = !expanded;
@@ -98,10 +99,10 @@
     return wrap;
   }
 
-  function renderJsonTree(value) {
+  function renderJsonTree(value, { expandRoot = true } = {}) {
     const root = document.createElement("div");
     root.className = "json-tree";
-    root.appendChild(buildNode(undefined, value, 0));
+    root.appendChild(buildNode(undefined, value, 0, expandRoot));
     return root;
   }
 

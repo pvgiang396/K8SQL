@@ -110,7 +110,14 @@ function scheduleRespawn(): void {
     "sleep 2",
     "DISPLAY=${DISPLAY:-:0} nohup k8sql --tray >/dev/null 2>&1 &",
   ].join(" ; ");
-  const child = spawn("bash", ["-c", script], { detached: true, stdio: "ignore" });
+  // env tối thiểu (không kế thừa process.env đầy đủ) — process.env sidecar có chứa
+  // token/connection-string secret do refreshProcessEnvSecrets() populate, tránh secret rò vào
+  // môi trường của 1 child process không cần tới nó.
+  const child = spawn("bash", ["-c", script], {
+    detached: true,
+    stdio: "ignore",
+    env: { PATH: process.env.PATH || "", HOME: process.env.HOME || "", DISPLAY: process.env.DISPLAY || "" },
+  });
   child.unref();
 }
 

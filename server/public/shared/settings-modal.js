@@ -131,23 +131,35 @@ function deriveKeyFromUrl(text) {
     .toUpperCase();
 }
 
-// Cho phép nhiều Rancher cluster cùng domain (khác token) — trước đây bị chặn vì Rancher Key sinh
-// thuần từ domain gây trùng. Entry đầu tiên của 1 domain giữ key trần (không phá key cũ đã lưu/đang
-// tham chiếu ở db-environments.json), entry thứ 2/3.. cùng domain cộng thêm _<số thứ tự>.
-function deriveUniqueRancherKey(cluster, clusters) {
+function tokenIdPrefix(token) {
+  const raw = String(token || "").trim();
+  const colon = raw.indexOf(":");
+  if (colon <= 0) return "";
+  return raw.slice(0, colon);
+}
+
+// Rancher Key = <key từ URL>_<suffix>. Suffix ưu tiên username, không thì phần token trước ':'.
+// Có username thì trả stem đúng (trùng Key xử lý lúc commit: hỏi gộp/xoá). Chưa có username
+// thì trùng stem với cluster khác thêm _2, _3, ...
+function desiredRancherKey(cluster) {
   const base = deriveKeyFromUrl(cluster.rancherUrl);
   if (!base) return base;
-  const pattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:_(\\d+))?$`);
-  let baseTaken = false;
-  let maxSeq = 1;
-  clusters.forEach((c) => {
-    if (c === cluster) return;
-    const m = pattern.exec(c.name || "");
-    if (!m) return;
-    if (m[1]) maxSeq = Math.max(maxSeq, Number(m[1]));
-    else baseTaken = true;
-  });
-  return baseTaken ? `${base}_${maxSeq + 1}` : base;
+  const username = String(cluster.username || "").trim();
+  const prefix = username || tokenIdPrefix(cluster.tokenValue) || String(cluster.tokenPrefix || "").trim();
+  return prefix ? `${base}_${prefix}` : base;
+}
+
+function deriveUniqueRancherKey(cluster, clusters) {
+  const stem = desiredRancherKey(cluster);
+  if (!stem) return stem;
+  if (String(cluster.username || "").trim()) return stem;
+  const taken = new Set(
+    (clusters || []).filter((c) => c !== cluster).map((c) => c.name).filter(Boolean)
+  );
+  if (!taken.has(stem)) return stem;
+  let n = 2;
+  while (taken.has(`${stem}_${n}`)) n += 1;
+  return `${stem}_${n}`;
 }
 
 // Phân tích host:port THẬT từ Connection String (nếu có) để tự điền cột "DB Host/Port" — chỉ khớp
@@ -177,6 +189,16 @@ function toTunnelConnectionTemplate(urlValue) {
 function parseDbTypeFromConnectionString(text) {
   const m = String(text || "").match(/^([a-z][a-z0-9+.-]*):\/\//i);
   return m ? m[1].toLowerCase() : "";
+}
+
+function parseDatabaseNameFromConnectionString(text) {
+  const match = String(text || "").match(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*\/([^?#]*)/i);
+  if (!match || !match[1]) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
 }
 
 // createField — 1 hàng "label + value" trong card danh sách (Rancher/Connection String), thay cho
@@ -512,7 +534,7 @@ function renderStatusCell(cell, env) {
 // URL KEY (định danh Connection String) tự sinh — giống tinh thần công thức Rancher Key: dùng
 // namespace+dbHost khi có Rancher (k8s-tunnel), hoặc host rút ra từ chính connection string gõ
 // tay khi không dùng Rancher. Cộng thêm tiền tố dbType (từ scheme connection string) + hậu tố port
-// — để cùng 1 IP nhưng khác port/khác DB engine vẫn khai được 2 connection string khác nhau.
+// — để cùng 1 IP nhưng khác port/khác DB engine/database vẫn khai được nhiều connection string.
 function deriveDbEnvKey(env) {
   let base;
   if (env.rancherKey && env.namespace && env.dbHost) {
@@ -522,7 +544,7 @@ function deriveDbEnvKey(env) {
     base = m ? m[1] : env.urlValue;
   }
   const dbType = parseDbTypeFromConnectionString(env.urlValue);
-  const parts = [dbType, base, env.dbPort].filter(Boolean);
+  const parts = [dbType, base, env.dbPort, parseDatabaseNameFromConnectionString(env.urlValue)].filter(Boolean);
   return parts
     .join("_")
     .toUpperCase()
@@ -541,6 +563,9 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
   const btnAddCluster = $("smBtnAddCluster");
   const btnAddDbEnv = $("smBtnAddDbEnv");
   const btnAddGroup = $("smBtnAddGroup");
+  const btnExportDb = $("smBtnExportDb");
+  const btnExportGroup = $("smBtnExportGroup");
+  const titleEl = $("smTitle");
   const statusEl = $("smStatus");
   const btnClose = $("smBtnClose");
   const btnApply = $("smBtnApply");
@@ -550,6 +575,130 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
   }
 
   const state = { rancherClusters: [], dbEnvironments: [], namespaceGroups: [] };
+
+  function retargetRancherKey(oldName, newName) {
+    if (!oldName || oldName === newName) return;
+    state.dbEnvironments.forEach((env) => {
+      if (env.rancherKey === oldName) env.rancherKey = newName;
+    });
+    state.namespaceGroups.forEach((g) => {
+      if (g.rancherKey === oldName) g.rancherKey = newName;
+    });
+  }
+
+  function applyRenamedRancherKeys(renamed) {
+    (renamed || []).forEach((item) => {
+      const from = item && item.from;
+      const to = item && item.to;
+      if (!from || !to || from === to) return;
+      const cluster = state.rancherClusters.find((c) => c.name === from);
+      if (cluster) {
+        cluster.name = to;
+        if (!cluster.tokenEnvVarManuallySet) {
+          cluster.tokenEnvVar = slugEnvVar(cluster.name, "_TOKEN");
+        }
+      }
+      retargetRancherKey(from, to);
+    });
+  }
+
+  function assignClusterName(cluster, newName, keySpan) {
+    cluster.name = newName;
+    if (!cluster.tokenEnvVarManuallySet) {
+      cluster.tokenEnvVar = slugEnvVar(cluster.name, "_TOKEN");
+    }
+    if (keySpan) keySpan.textContent = cluster.name || "";
+  }
+
+  function syncClusterKey(cluster, keySpan, { force = false } = {}) {
+    if (!force && !cluster.isNew) return;
+    const oldName = cluster.name;
+    assignClusterName(cluster, deriveUniqueRancherKey(cluster, state.rancherClusters), keySpan);
+    if (oldName !== cluster.name) {
+      retargetRancherKey(oldName, cluster.name);
+      if (force) {
+        renderRancherKeyOptions();
+        renderGroupsTable();
+      }
+    }
+  }
+
+  async function persistSettings({ rancherRemoved = false } = {}) {
+    if (rancherRemoved) {
+      await persistDbEnvironments();
+      await persistNamespaceGroups();
+      await persistRancherClusters();
+    } else {
+      await persistRancherClusters();
+      await persistDbEnvironments();
+      await persistNamespaceGroups();
+    }
+  }
+
+  async function offerMergeIntoExisting(cluster, desiredName) {
+    const other = state.rancherClusters.find((c) => c !== cluster && c.name === desiredName);
+    if (!other) return { merged: false, cancelled: false };
+
+    const movedEnvs = state.dbEnvironments.filter((env) => env.rancherKey === cluster.name);
+    const movedGroups = state.namespaceGroups.filter((g) => g.rancherKey === cluster.name);
+    const envCount = movedEnvs.length;
+    const groupCount = movedGroups.length;
+    const parts = [`Rancher Key "${desiredName}" đã tồn tại.`];
+    if (envCount || groupCount) {
+      const used = [];
+      if (envCount) used.push(`${envCount} Connection String`);
+      if (groupCount) used.push(`${groupCount} nhóm namespace`);
+      parts.push(`Có muốn cập nhật Rancher Key cho ${used.join(" và ")} đang dùng rancher này sang rancher đã có, rồi xoá rancher dư thừa không?`);
+    } else {
+      parts.push("Có muốn xoá rancher dư thừa này không?");
+    }
+
+    const confirmed = await confirmSimple({
+      title: "Rancher Key đã tồn tại",
+      message: parts.join(" "),
+      confirmLabel: "Cập nhật và xoá",
+      cancelLabel: "Huỷ"
+    });
+    if (!confirmed) return { merged: false, cancelled: true };
+
+    movedEnvs.forEach((env) => {
+      env.rancherKey = other.name;
+      env.mode = "k8s-tunnel";
+    });
+    movedGroups.forEach((g) => {
+      g.rancherKey = other.name;
+    });
+    const idx = state.rancherClusters.indexOf(cluster);
+    if (idx >= 0) state.rancherClusters.splice(idx, 1);
+    return { merged: true, cancelled: false, removed: cluster, other, movedEnvs, movedGroups, removedIndex: idx };
+  }
+
+  function revertClusterIdentity(cluster, snapshot) {
+    if (!snapshot) return;
+    cluster.username = snapshot.username;
+    assignClusterName(cluster, snapshot.name);
+  }
+
+  async function commitClusterUsername(cluster, keySpan) {
+    const desired = desiredRancherKey(cluster);
+    if (!desired) {
+      syncClusterKey(cluster, keySpan, { force: true });
+      return { merged: false, cancelled: false };
+    }
+    const savedOwner = state.rancherClusters.find(
+      (c) => c !== cluster && c.name === desired && !c.isNew
+    );
+    const previewOwner = state.rancherClusters.find((c) => c !== cluster && c.name === desired);
+    const other = savedOwner || (cluster.isNew ? previewOwner : null);
+    if (other) {
+      const result = await offerMergeIntoExisting(cluster, other.name);
+      if (result.cancelled || result.merged) return result;
+    }
+    const oldName = cluster.name;
+    assignClusterName(cluster, desired, keySpan);
+    if (oldName !== cluster.name) retargetRancherKey(oldName, cluster.name);
+    return { merged: false, cancelled: false };
+  }
 
   function setSectionExpanded(sectionKey, expanded) {
     const body = {
@@ -570,7 +719,7 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     if (!target) return;
     target.focus();
     if (typeof target.select === "function") target.select();
-    const card = target.closest(".sm-card");
+    const card = target.closest("tr, .sm-card");
     if (card) card.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
@@ -672,6 +821,250 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     statusEl.className = `sm-status${kind ? ` ${kind}` : ""}`;
   }
 
+  // _editing true/false thắng isNew. Dòng mới (chưa gán cờ) mở sẵn ở chế độ sửa.
+  function isEditing(item) {
+    if (item._editing === true) return true;
+    if (item._editing === false) return false;
+    return Boolean(item.isNew);
+  }
+
+  function optionLabel(options, value) {
+    if (value === undefined || value === null || value === "") return "";
+    if (Array.isArray(options)) {
+      const found = options.find((o) => o && (o.value === value || o.id === value));
+      if (found) return found.label || found.name || String(value);
+    }
+    return String(value);
+  }
+
+  const ICON_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>';
+
+  // Cột Token / Connection String ở dạng xem: chỉ dấu che + icon mắt. Không ghi giá trị vừa
+  // xem vào tokenValue/urlValue — bấm mắt chỉ để đọc, không đánh dấu secret là đã sửa.
+  function secretViewCell(tr, { hasSecret, typed, onReveal }) {
+    const td = document.createElement("td");
+    td.className = "sm-cell-text";
+    if (!hasSecret && !typed) {
+      tr.appendChild(td);
+      return td;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "sm-secret-view";
+    const label = document.createElement("span");
+    label.className = "sm-secret-text";
+    label.textContent = "••••••";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "sm-secret-eye";
+    btn.title = "Xem giá trị";
+    btn.setAttribute("aria-label", "Xem giá trị");
+    btn.innerHTML = ICON_EYE;
+    let open = false;
+    let cached = typed || "";
+    btn.addEventListener("click", async () => {
+      if (open) {
+        open = false;
+        label.textContent = "••••••";
+        label.title = "";
+        btn.title = "Xem giá trị";
+        btn.setAttribute("aria-label", "Xem giá trị");
+        btn.innerHTML = ICON_EYE;
+        return;
+      }
+      btn.disabled = true;
+      try {
+        if (!cached && onReveal) cached = (await onReveal()) || "";
+        if (!cached) {
+          btn.title = "Không có giá trị";
+          return;
+        }
+        open = true;
+        label.textContent = cached;
+        label.title = cached;
+        btn.title = "Ẩn giá trị";
+        btn.setAttribute("aria-label", "Ẩn giá trị");
+        btn.innerHTML = ICON_EYE_OFF;
+      } catch (error) {
+        btn.title = `Lỗi lấy giá trị: ${error.message}`;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    wrap.appendChild(label);
+    wrap.appendChild(btn);
+    td.appendChild(wrap);
+    tr.appendChild(td);
+    return td;
+  }
+
+  function textCell(tr, text) {
+    const td = document.createElement("td");
+    td.className = "sm-cell-text";
+    const value = text == null ? "" : String(text);
+    td.textContent = value;
+    td.title = value;
+    tr.appendChild(td);
+    return td;
+  }
+
+  function editCell(tr) {
+    const td = document.createElement("td");
+    tr.appendChild(td);
+    return td;
+  }
+
+  const ICON_PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+  const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
+  function appendEditToggle(actionsCell, item, rerender) {
+    const editing = isEditing(item);
+    const btn = document.createElement("a");
+    btn.href = "#";
+    btn.className = "sm-btn-edit";
+    btn.title = editing ? "Xong" : "Sửa";
+    btn.setAttribute("aria-label", btn.title);
+    btn.innerHTML = editing ? ICON_CHECK : ICON_PENCIL;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      item._editing = !editing;
+      rerender();
+    });
+    actionsCell.appendChild(btn);
+  }
+
+  function appendSelectCell(tr, item) {
+    const td = document.createElement("td");
+    td.className = "sm-cell-check";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    const selectable = Boolean(item.name) && !item.isNew;
+    cb.checked = Boolean(item._selected) && selectable;
+    cb.disabled = !selectable;
+    cb.title = selectable ? "Chọn để export" : "Lưu dòng này trước khi export";
+    cb.addEventListener("change", () => {
+      item._selected = cb.checked;
+      refreshExportButtons();
+      syncSelectAll();
+    });
+    td.appendChild(cb);
+    tr.appendChild(td);
+  }
+
+  function selectedExportNames() {
+    return {
+      environmentNames: state.dbEnvironments.filter((e) => e._selected && e.name && !e.isNew).map((e) => e.name),
+      namespaceGroupNames: state.namespaceGroups.filter((g) => g._selected && g.name && !g.isNew).map((g) => g.name)
+    };
+  }
+
+  function refreshExportButtons() {
+    const picked = selectedExportNames();
+    const enabled = picked.environmentNames.length + picked.namespaceGroupNames.length > 0;
+    [btnExportDb, btnExportGroup].forEach((btn) => {
+      if (!btn) return;
+      btn.classList.toggle("disabled", !enabled);
+      btn.title = enabled
+        ? "Export các dòng đã chọn. Rancher mà chúng trỏ tới được kèm theo."
+        : "Chọn connection hoặc nhóm namespace đã lưu để export";
+    });
+  }
+
+  function syncSelectAll() {
+    const bind = (id, items) => {
+      const cb = mountEl.querySelector(id);
+      if (!cb) return;
+      const selectable = items.filter((item) => item.name && !item.isNew);
+      const selected = selectable.filter((item) => item._selected).length;
+      cb.checked = selectable.length > 0 && selected === selectable.length;
+      cb.indeterminate = selected > 0 && selected < selectable.length;
+    };
+    bind("#smDbEnvSelectAll", state.dbEnvironments);
+    bind("#smGroupSelectAll", state.namespaceGroups);
+  }
+
+  async function exportSelected(event) {
+    if (event) event.preventDefault();
+    const picked = selectedExportNames();
+    if (!picked.environmentNames.length && !picked.namespaceGroupNames.length) {
+      setStatus("Chọn ít nhất một connection hoặc nhóm namespace đã lưu.", "error");
+      return;
+    }
+    setStatus("Đang export...", "");
+    try {
+      if (window.__TAURI__ && window.__TAURI__.dialog) {
+        const targetPath = await window.__TAURI__.dialog.save({
+          defaultPath: "k8sql-config-selection.sqlite",
+          filters: [{ name: "SQLite", extensions: ["sqlite"] }]
+        });
+        if (!targetPath) {
+          setStatus("", "");
+          return;
+        }
+        const response = await fetch("/sql/config/export-selection-to-path", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: targetPath, ...picked })
+        });
+        const body = await response.json().catch(() => null);
+        if (!response.ok || !body?.success) throw new Error(body?.message || `HTTP ${response.status}`);
+        const d = body.data || {};
+        setStatus(
+          `Đã export ${d.environmentsCount ?? 0} connection, ${d.namespaceGroupsCount ?? 0} nhóm namespace, ${d.rancherClustersCount ?? 0} Rancher cha.`,
+          "success"
+        );
+        return;
+      }
+      const response = await fetch("/sql/config/export-selection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(picked)
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.message || `HTTP ${response.status}`);
+      }
+      const bytes = await response.arrayBuffer();
+      const blob = new Blob([bytes], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "k8sql-config-selection.sqlite";
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus(
+        `Đã export ${picked.environmentNames.length} connection và ${picked.namespaceGroupNames.length} nhóm namespace (kèm Rancher cha).`,
+        "success"
+      );
+    } catch (error) {
+      if (error.name === "AbortError") {
+        setStatus("", "");
+        return;
+      }
+      setStatus(error.message || "Export thất bại.", "error");
+    }
+  }
+
+  const SECTION_META = {
+    rancher: { title: "Cấu hình rancher", section: "rancher" },
+    connectstring: { title: "Cấu hình connectstring", section: "db-env" },
+    namespace: { title: "Cấu hình nhóm namespace", section: "namespace-group" }
+  };
+
+  function showSection(key) {
+    const meta = SECTION_META[key] || SECTION_META.rancher;
+    if (titleEl) titleEl.textContent = meta.title;
+    mountEl.querySelectorAll("[data-section]").forEach((el) => {
+      el.hidden = el.dataset.section !== meta.section;
+    });
+    for (const item of [...state.rancherClusters, ...state.dbEnvironments, ...state.namespaceGroups]) {
+      if (!item.isNew) item._editing = false;
+    }
+    renderRancherTable();
+    renderGroupsTable();
+    refreshExportButtons();
+  }
+
   // Dò cluster THẬT bằng Rancher URL+Token user vừa gõ (chưa "Áp dụng", chưa có trong .env) — gợi ý
   // clusterId qua combobox. Chỉ gọi được khi cả 2 field không rỗng (trigger ở renderRancherTable()
   // qua sự kiện blur, không debounce theo từng keystroke).
@@ -696,41 +1089,124 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     renderRancherTable();
   }
 
+  function bindClusterRowActions(actionsCell, cluster, index) {
+    appendEditToggle(actionsCell, cluster, renderRancherTable);
+    const deleteClusterBtn = document.createElement("a");
+    deleteClusterBtn.href = "#";
+    deleteClusterBtn.className = "sm-btn-delete";
+    deleteClusterBtn.innerHTML = '<img src="/assets/delete.png" alt="" />';
+    deleteClusterBtn.title = "Xoá cluster";
+    deleteClusterBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const blockedBy = state.dbEnvironments.filter((env) => env.rancherKey === cluster.name);
+      const blockedGroups = state.namespaceGroups.filter((g) => g.rancherKey === cluster.name);
+      if (blockedBy.length || blockedGroups.length) {
+        const parts = [];
+        if (blockedBy.length) parts.push(`${blockedBy.length} Connection String`);
+        if (blockedGroups.length) parts.push(`${blockedGroups.length} nhóm namespace`);
+        setStatus(
+          `Không thể xoá "${cluster.rancherUrl || cluster.name}" — còn ${parts.join(" và ")} đang trỏ tới.`,
+          "error"
+        );
+        return;
+      }
+      const confirmed = cluster.name
+        ? await confirmDeleteWithKey({
+            keyLabel: "Rancher Key",
+            expectedKey: cluster.name,
+            itemLabel: cluster.rancherUrl || cluster.name
+          })
+        : true;
+      if (!confirmed) return;
+      const [removed] = state.rancherClusters.splice(index, 1);
+      renderRancherTable();
+      if (!removed.isNew) {
+        try {
+          await persistRancherClusters();
+          setStatus(`Đã xoá "${removed.rancherUrl || removed.name}".`, "success");
+        } catch (error) {
+          state.rancherClusters.splice(index, 0, removed);
+          renderRancherTable();
+          setStatus(`Xoá "${removed.rancherUrl || removed.name}" thất bại: ${error.message}`, "error");
+        }
+      }
+    });
+    actionsCell.appendChild(deleteClusterBtn);
+
+    const copyClusterBtn = document.createElement("a");
+    copyClusterBtn.href = "#";
+    copyClusterBtn.className = "sm-btn-copy";
+    copyClusterBtn.textContent = "⧉";
+    copyClusterBtn.title = "Copy định danh Rancher này";
+    copyClusterBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      const parts = [`name="${cluster.name}"`, `url="${cluster.rancherUrl}"`, `clusterId="${cluster.clusterId}"`];
+      if (cluster.username) parts.push(`username="${cluster.username}"`);
+      if (cluster.description) parts.push(`description="${cluster.description}"`);
+      navigator.clipboard.writeText(`Rancher: ${parts.join(" ")}`).then(() => {
+        copyClusterBtn.textContent = "✓";
+        setTimeout(() => {
+          copyClusterBtn.textContent = "⧉";
+        }, 1000);
+      });
+    });
+    actionsCell.appendChild(copyClusterBtn);
+  }
+
   function renderRancherTable() {
     rancherBody.innerHTML = "";
     state.rancherClusters.forEach((cluster, index) => {
-      const row = document.createElement("div");
-      row.className = "sm-card";
+      const editing = isEditing(cluster);
+      const row = document.createElement("tr");
+      const actionsTd = document.createElement("td");
+      const actionsCell = document.createElement("div");
+      actionsCell.className = "sm-row-actions";
+      actionsTd.appendChild(actionsCell);
+      bindClusterRowActions(actionsCell, cluster, index);
 
-      const descHeader = createDescHeader({
-        index: index + 1,
-        getValue: () => cluster.description,
-        onCommit: (value) => {
-          cluster.description = value;
-        },
-        placeholder: "Mô tả (tuỳ chọn)",
-        icon: "/assets/k8s.png",
-        iconAlt: "Rancher",
-        labelPrefix: "Rancher"
+      if (!editing) {
+        textCell(row, cluster.description || "");
+        textCell(row, cluster.rancherUrl || "");
+        textCell(row, cluster.username || "");
+        secretViewCell(row, {
+          hasSecret: cluster.hasValue,
+          typed: cluster.tokenValue,
+          onReveal:
+            !cluster.isNew && cluster.hasValue && endpoints.revealRancherToken
+              ? async () => {
+                  const body = await fetch(endpoints.revealRancherToken, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name: cluster.name })
+                  }).then((r) => r.json());
+                  if (!body.success) throw new Error(body.message || "Lỗi không xác định");
+                  return body.data.value;
+                }
+              : null
+        });
+        textCell(row, cluster.clusterId || "");
+        textCell(row, cluster.name || "");
+        row.appendChild(actionsTd);
+        rancherBody.appendChild(row);
+        return;
+      }
+
+      const descCell = editCell(row);
+      const descInput = document.createElement("input");
+      descInput.type = "text";
+      descInput.autocomplete = "off";
+      descInput.placeholder = "Mô tả (tuỳ chọn)";
+      descInput.value = cluster.description || "";
+      descInput.addEventListener("input", () => {
+        cluster.description = descInput.value.trim();
       });
-      row.appendChild(descHeader.header);
-      const actionsCell = descHeader.actionsSlot;
+      descCell.appendChild(descInput);
 
-      const urlField = createField("Rancher URL");
-      row.appendChild(urlField.field);
-      const urlCell = urlField.value;
-
-      const tokenField = createField("Rancher token");
-      row.appendChild(tokenField.field);
-      const tokenCell = tokenField.value;
-
-      const clusterIdField = createField("Cluster ID");
-      row.appendChild(clusterIdField.field);
-      const clusterIdCell = clusterIdField.value;
-
-      const keyField = createField("Rancher Key");
-      row.appendChild(keyField.field);
-      const keyCell = keyField.value;
+      const urlCell = editCell(row);
+      const usernameCell = editCell(row);
+      const tokenCell = editCell(row);
+      const clusterIdCell = editCell(row);
+      const keyCell = editCell(row);
 
       const maybeFetchClusterOptions = () => {
         if (cluster.rancherUrl && cluster.tokenValue) fetchClusterOptions(cluster);
@@ -751,15 +1227,73 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         : "Sửa URL không đổi Rancher Key (vẫn giữ nguyên tham chiếu ở Connection String).";
       urlInput.addEventListener("input", () => {
         cluster.rancherUrl = urlInput.value.trim();
-        if (cluster.isNew) {
-          cluster.name = deriveUniqueRancherKey(cluster, state.rancherClusters);
-          if (!cluster.tokenEnvVarManuallySet) {
-            cluster.tokenEnvVar = slugEnvVar(cluster.name, "_TOKEN");
-          }
-        }
+        syncClusterKey(cluster, keySpan);
       });
       urlInput.addEventListener("blur", maybeFetchClusterOptions);
       urlCell.appendChild(urlInput);
+
+      const usernameInput = document.createElement("input");
+      usernameInput.type = "text";
+      usernameInput.autocomplete = "username";
+      usernameInput.name = `sm-rancher-username-${index}`;
+      usernameInput.placeholder = "tuỳ chọn — ưu tiên dùng làm hậu tố Rancher Key";
+      usernameInput.value = cluster.username || "";
+      usernameInput.addEventListener("focus", () => {
+        cluster._usernameSnapshot = cluster.username || "";
+        cluster._nameSnapshot = cluster.name || "";
+      });
+      usernameInput.addEventListener("input", () => {
+        cluster.username = usernameInput.value;
+        if (keySpan) keySpan.textContent = desiredRancherKey(cluster) || cluster.name || "";
+      });
+      usernameInput.addEventListener("blur", async () => {
+        cluster.username = usernameInput.value.trim();
+        usernameInput.value = cluster.username;
+        const snapshot = { username: cluster._usernameSnapshot || "", name: cluster._nameSnapshot || "" };
+        const usernameChanged = cluster.username !== snapshot.username;
+        if (!usernameChanged && cluster.name === snapshot.name) return;
+        try {
+          const result = await commitClusterUsername(cluster, keySpan);
+          if (result.cancelled) {
+            revertClusterIdentity(cluster, snapshot);
+            usernameInput.value = cluster.username || "";
+            assignClusterName(cluster, cluster.name, keySpan);
+            setStatus("Đã huỷ. Giữ nguyên Rancher Key cũ.", "");
+            return;
+          }
+          if (result.merged) {
+            try {
+              if (!result.removed.isNew) await persistSettings({ rancherRemoved: true });
+            } catch (error) {
+              if (result.removedIndex >= 0) {
+                state.rancherClusters.splice(result.removedIndex, 0, result.removed);
+              }
+              (result.movedEnvs || []).forEach((env) => {
+                env.rancherKey = result.removed.name;
+              });
+              (result.movedGroups || []).forEach((g) => {
+                g.rancherKey = result.removed.name;
+              });
+              revertClusterIdentity(result.removed, snapshot);
+              throw error;
+            }
+            renderRancherTable();
+            renderRancherKeyOptions();
+            renderGroupsTable();
+            setStatus(`Đã chuyển Connection String sang "${result.other.name}" và xoá rancher dư thừa.`, "success");
+            return;
+          }
+          if (!cluster.isNew) await persistSettings();
+          renderRancherKeyOptions();
+          renderGroupsTable();
+        } catch (error) {
+          revertClusterIdentity(cluster, snapshot);
+          usernameInput.value = cluster.username || "";
+          assignClusterName(cluster, cluster.name, keySpan);
+          setStatus(`Cập nhật Rancher Key thất bại: ${error.message}`, "error");
+        }
+      });
+      usernameCell.appendChild(usernameInput);
 
       const tokenInput = document.createElement("input");
       tokenInput.type = "password";
@@ -770,6 +1304,8 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       tokenInput.value = cluster.tokenValue || "";
       tokenInput.addEventListener("input", () => {
         cluster.tokenValue = tokenInput.value;
+        const hasUsername = Boolean(String(cluster.username || "").trim());
+        syncClusterKey(cluster, keySpan, { force: cluster.isNew || !hasUsername });
       });
       tokenInput.addEventListener("blur", maybeFetchClusterOptions);
       // Chỉ gọi API reveal thật khi field THẬT SỰ có giá trị đã lưu (!isNew + hasValue) VÀ endpoint
@@ -803,78 +1339,13 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         })
       );
 
-      // Rancher Key — chỉ xem, không cho sửa (tự sinh từ domain qua deriveUniqueRancherKey()).
+      // Rancher Key — chỉ xem, không cho sửa (tự sinh từ URL + prefix token).
       const keySpan = document.createElement("span");
       keySpan.className = "sm-readonly-text";
       keySpan.textContent = cluster.name || "";
       keyCell.appendChild(keySpan);
 
-      const deleteClusterBtn = document.createElement("a");
-      deleteClusterBtn.href = "#";
-      deleteClusterBtn.className = "sm-btn-delete";
-      deleteClusterBtn.innerHTML = '<img src="/assets/delete.png" alt="" />';
-      deleteClusterBtn.title = "Xoá cluster";
-      deleteClusterBtn.addEventListener("click", async (e) => {
-        e.preventDefault();
-        const blockedBy = state.dbEnvironments.filter((env) => env.rancherKey === cluster.name);
-        if (blockedBy.length) {
-          setStatus(
-            `Không thể xoá "${cluster.rancherUrl || cluster.name}" — còn ${blockedBy.length} Connection String đang trỏ tới (xoá Connection String đó trước).`,
-            "error"
-          );
-          return;
-        }
-        // cluster.name (Rancher Key) tự sinh từ Rancher URL — chưa gõ URL thì Key rỗng, và nút
-        // "Xóa ngay" của confirmDeleteWithKey chỉ bật khi gõ khớp expectedKey (không có cách nào
-        // gõ ra chuỗi rỗng để khớp) → bỏ qua bước gõ xác nhận cho cluster rỗng này.
-        const confirmed = cluster.name
-          ? await confirmDeleteWithKey({
-              keyLabel: "Rancher Key",
-              expectedKey: cluster.name,
-              itemLabel: cluster.rancherUrl || cluster.name
-            })
-          : true;
-        if (!confirmed) return;
-        const [removed] = state.rancherClusters.splice(index, 1);
-        renderRancherTable();
-        // Entry đã lưu (!isNew) tồn tại thật trong config/rancher-clusters.json trên đĩa — phải ghi
-        // ngay xuống file, không chỉ bỏ khỏi state cục bộ (bug thật đã gặp: xoá trên UI xong không
-        // bấm "Áp dụng" → reload trang lại thấy y nguyên, tưởng nhầm là bấm xoá không có tác dụng).
-        // Entry mới thêm (isNew, chưa từng lưu) thì không có gì trên đĩa để xoá, bỏ qua gọi API.
-        if (!removed.isNew) {
-          try {
-            await persistRancherClusters();
-            setStatus(`Đã xoá "${removed.rancherUrl || removed.name}".`, "success");
-          } catch (error) {
-            state.rancherClusters.splice(index, 0, removed);
-            renderRancherTable();
-            setStatus(`Xoá "${removed.rancherUrl || removed.name}" thất bại: ${error.message}`, "error");
-          }
-        }
-      });
-      actionsCell.appendChild(deleteClusterBtn);
-
-      // Copy 1 chuỗi định danh duy nhất — mục đích để user dán cho AI hiểu ngay đây là Rancher nào
-      // (name/url/clusterId), không dùng icon PNG mới (chỉ có source cho "plus.png" trong yêu cầu
-      // này) — tái dùng ký tự ⧉ đúng convention icon copy đã có sẵn ở Object Explorer (index.html).
-      const copyClusterBtn = document.createElement("a");
-      copyClusterBtn.href = "#";
-      copyClusterBtn.className = "sm-btn-copy";
-      copyClusterBtn.textContent = "⧉";
-      copyClusterBtn.title = "Copy định danh Rancher này";
-      copyClusterBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        const parts = [`name="${cluster.name}"`, `url="${cluster.rancherUrl}"`, `clusterId="${cluster.clusterId}"`];
-        if (cluster.description) parts.push(`description="${cluster.description}"`);
-        navigator.clipboard.writeText(`Rancher: ${parts.join(" ")}`).then(() => {
-          copyClusterBtn.textContent = "✓";
-          setTimeout(() => {
-            copyClusterBtn.textContent = "⧉";
-          }, 1000);
-        });
-      });
-      actionsCell.appendChild(copyClusterBtn);
-
+      row.appendChild(actionsTd);
       rancherBody.appendChild(row);
     });
     renderRancherKeyOptions();
@@ -948,24 +1419,43 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
   // deleteDbEnvBtn) — tách ra để nút xoá ghi ngay xuống đĩa thay vì chỉ sửa state cục bộ chờ "Áp
   // dụng" (đồng bộ hiển thị UI với file thật, tránh reload trang làm mất thao tác xoá).
   async function persistRancherClusters() {
-    await fetch(endpoints.rancherClusters, {
+    const body = await fetch(endpoints.rancherClusters, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        clusters: state.rancherClusters.map((c) => ({
+        clusters: state.rancherClusters
+          .filter((c) => c.rancherUrl && c.clusterId && c.name && c.tokenEnvVar)
+          .map((c) => ({
+          id: c.id,
           name: c.name,
           rancherUrl: c.rancherUrl,
           clusterId: c.clusterId,
           insecureTLS: true,
           tokenEnvVar: c.tokenEnvVar,
-          description: c.description
+          description: c.description,
+          username: c.username || ""
         }))
       })
     }).then(assertOk);
+    applyRenamedRancherKeys(body.data && body.data.renamed);
+    const savedClusters = (body.data && body.data.clusters) || [];
+    if (savedClusters.length) {
+      const byName = new Map(savedClusters.map((c) => [c.name, c]));
+      state.rancherClusters.forEach((c) => {
+        const saved = byName.get(c.name);
+        if (!saved) return;
+        c.id = saved.id;
+        c.isNew = false;
+        c.username = saved.username || "";
+        c.tokenPrefix = saved.tokenPrefix || c.tokenPrefix || "";
+        c.hasValue = saved.hasValue;
+        c.tokenEnvVar = saved.tokenEnvVar || c.tokenEnvVar;
+      });
+    }
   }
 
   async function persistDbEnvironments() {
-    await fetch(endpoints.dbEnvironments, {
+    const body = await fetch(endpoints.dbEnvironments, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -981,11 +1471,19 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
           dbPort: e.dbPort,
           projectId: e.projectId,
           existingPodName: e.existingPodName,
+          expectedExistingPodName: e._savedPodName,
           allowWrite: e.allowWrite,
           engine: e.engine
         }))
       })
     }).then(assertOk);
+    const savedByName = new Map((body.data?.environments || []).map((env) => [env.name, env]));
+    state.dbEnvironments.forEach((env) => {
+      const saved = savedByName.get(env.name);
+      if (!saved) return;
+      env.existingPodName = saved.existingPodName;
+      env._savedPodName = saved.existingPodName || null;
+    });
   }
 
   // fetchPodOptions — nạp dropdown "Pod có sẵn" (existingPodName, dùng cho exec-relay tunnel thay
@@ -1325,6 +1823,83 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     if (!env.connectionStringEnvVarManuallySet) {
       env.connectionStringEnvVar = slugEnvVar(env.name, "_URL");
     }
+    if (typeof env._onKeyChange === "function") env._onKeyChange();
+  }
+
+  function bindDbEnvRowActions(actionsCell, env, index) {
+    appendEditToggle(actionsCell, env, renderDbEnvTable);
+    if (endpoints.testDbConnection) {
+      const testEligible =
+        !env.isNew ||
+        Boolean(endpoints.testDbConnectionAdhoc && env.urlValue && (!env.rancherKey || (env.namespace && env.projectId && env.dbHost && env.dbPort)));
+      const testBtn = document.createElement("a");
+      testBtn.href = "#";
+      testBtn.className = testEligible ? "sm-btn-test" : "sm-btn-test disabled";
+      testBtn.innerHTML = '<img src="/assets/test-connection.png" alt="" />';
+      testBtn.title = testEligible
+        ? "Kiểm tra kết nối"
+        : "Nhập đủ Connection String" + (env.rancherKey ? "/Namespace/Project/DB Host/Port" : "") + " trước khi kiểm tra";
+      testBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (!testEligible) return;
+        testConnection(env);
+      });
+      actionsCell.appendChild(testBtn);
+    }
+    const deleteDbEnvBtn = document.createElement("a");
+    deleteDbEnvBtn.href = "#";
+    deleteDbEnvBtn.className = "sm-btn-delete";
+    deleteDbEnvBtn.innerHTML = '<img src="/assets/delete.png" alt="" />';
+    deleteDbEnvBtn.title = "Xoá connection";
+    deleteDbEnvBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const confirmed = env.name
+        ? await confirmDeleteWithKey({
+            keyLabel: "URL Key",
+            expectedKey: env.name,
+            itemLabel: env.name || "(chưa đặt tên)"
+          })
+        : true;
+      if (!confirmed) return;
+      const [removed] = state.dbEnvironments.splice(index, 1);
+      renderDbEnvTable();
+      if (!removed.isNew) {
+        try {
+          await persistDbEnvironments();
+          setStatus(`Đã xoá connection "${removed.name || "(chưa đặt tên)"}".`, "success");
+        } catch (error) {
+          state.dbEnvironments.splice(index, 0, removed);
+          renderDbEnvTable();
+          setStatus(`Xoá connection "${removed.name || "(chưa đặt tên)"}" thất bại: ${error.message}`, "error");
+        }
+      }
+    });
+    actionsCell.appendChild(deleteDbEnvBtn);
+
+    const copyDbEnvBtn = document.createElement("a");
+    copyDbEnvBtn.href = "#";
+    copyDbEnvBtn.className = "sm-btn-copy";
+    copyDbEnvBtn.textContent = "⧉";
+    copyDbEnvBtn.title = "Copy định danh connection này";
+    copyDbEnvBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      const parts = [
+        `name="${env.name}"`,
+        `engine="${env.engine || ""}"`,
+        `rancherKey="${env.rancherKey || "(không dùng Rancher)"}"`,
+        `dbHost="${env.dbHost || ""}"`,
+        `dbPort="${env.dbPort || ""}"`,
+        `allowWrite=${Boolean(env.allowWrite)}`
+      ];
+      if (env.description) parts.push(`description="${env.description}"`);
+      navigator.clipboard.writeText(`Connection: ${parts.join(" ")}`).then(() => {
+        copyDbEnvBtn.textContent = "✓";
+        setTimeout(() => {
+          copyDbEnvBtn.textContent = "⧉";
+        }, 1000);
+      });
+    });
+    actionsCell.appendChild(copyDbEnvBtn);
   }
 
   function renderDbEnvTable() {
@@ -1332,69 +1907,81 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     const clusters = state.rancherClusters.filter((c) => c.name);
 
     state.dbEnvironments.forEach((env, index) => {
-      const row = document.createElement("div");
-      row.className = "sm-card";
+      const editing = isEditing(env);
+      const row = document.createElement("tr");
+      const actionsTd = document.createElement("td");
+      const actionsCell = document.createElement("div");
+      actionsCell.className = "sm-row-actions";
+      actionsTd.appendChild(actionsCell);
+      appendSelectCell(row, env);
+      bindDbEnvRowActions(actionsCell, env, index);
+      if (!env.isNew && env.rancherKey && !env._projects) {
+        Promise.resolve().then(() => fetchCascade(env, "projects"));
+      }
 
-      const descHeader = createDescHeader({
-        index: index + 1,
-        getValue: () => env.description,
-        onCommit: (value) => {
-          env.description = value;
-        },
-        placeholder: "Mô tả (tuỳ chọn)",
-        withStatus: true,
-        icon: "/assets/connect.png",
-        iconAlt: "Connect",
-        labelPrefix: "Connect"
+      const hostPortText = env.dbHost ? `${env.dbHost}${env.dbPort ? `:${env.dbPort}` : ""}` : "";
+      const rancherView = env.rancherKey || (env.domain ? `domain: ${env.domain}` : "Không dùng");
+
+      if (!editing) {
+        textCell(row, env.description || "");
+        textCell(row, env.name || "");
+        textCell(row, rancherView);
+        textCell(row, env.rancherKey ? optionLabel(env._projects, env.projectId) : "");
+        textCell(row, env.rancherKey ? (env.namespace || "") : "");
+        secretViewCell(row, {
+          hasSecret: env.hasValue,
+          typed: env.urlValue,
+          onReveal:
+            !env.isNew && env.hasValue && endpoints.revealDbEnvironmentValue
+              ? async () => {
+                  const body = await fetch(endpoints.revealDbEnvironmentValue, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name: env.name })
+                  }).then((r) => r.json());
+                  if (!body.success) throw new Error(body.message || "Lỗi không xác định");
+                  return body.data.value;
+                }
+              : null
+        });
+        textCell(row, env.rancherKey ? hostPortText : "");
+        textCell(row, env.rancherKey ? (env.existingPodName || "") : "");
+        const statusCell = document.createElement("td");
+        renderStatusCell(statusCell, env);
+        row.appendChild(statusCell);
+        row.appendChild(actionsTd);
+        dbEnvBody.appendChild(row);
+        return;
+      }
+
+      const descCell = editCell(row);
+      const descInput = document.createElement("input");
+      descInput.type = "text";
+      descInput.autocomplete = "off";
+      descInput.placeholder = "Mô tả (tuỳ chọn)";
+      descInput.value = env.description || "";
+      descInput.addEventListener("input", () => {
+        env.description = descInput.value.trim();
       });
-      row.appendChild(descHeader.header);
-      const actionsCell = descHeader.actionsSlot;
-      const allowWriteCell = descHeader.statusSlot;
+      descCell.appendChild(descInput);
 
-      // URL Key — trước đây không hiển thị ở đâu trên card này (khác Rancher Key ở bảng trên) dù
-      // đã dùng làm định danh tham chiếu nội bộ (env.name) — thêm hiển thị readonly để user có chỗ
-      // đọc/đối chiếu khi gõ lại xác nhận xoá (xem confirmDeleteWithKey()) và khi copy định danh.
-      const urlKeyField = createField("URL Key");
-      row.appendChild(urlKeyField.field);
+      const urlKeyCell = editCell(row);
       const urlKeySpan = document.createElement("span");
       urlKeySpan.className = "sm-readonly-text";
       urlKeySpan.textContent = env.name || "";
-      urlKeyField.value.appendChild(urlKeySpan);
+      env._onKeyChange = () => {
+        urlKeySpan.textContent = env.name || "";
+      };
+      urlKeyCell.appendChild(urlKeySpan);
 
-      const rancherField = createField("Rancher");
-      row.appendChild(rancherField.field);
-      const rancherCell = rancherField.value;
-
-      const projectField = createField("Project");
-      row.appendChild(projectField.field);
-      const projectCell = projectField.value;
-
-      const namespaceField = createField("Namespace");
-      row.appendChild(namespaceField.field);
-      const namespaceCell = namespaceField.value;
-
-      const connStringField = createField("Connection String");
-      row.appendChild(connStringField.field);
-      const connStringCell = connStringField.value;
-
-      const dbHostPortField = createField("DB Host/Port");
-      row.appendChild(dbHostPortField.field);
-      const dbHostPortCell = dbHostPortField.value;
-
-      const existingPodField = createField("Pod có sẵn");
-      row.appendChild(existingPodField.field);
-      const existingPodCell = existingPodField.value;
-
-      // Project/Namespace/DB Host-Port/Pod có sẵn chỉ có ý nghĩa khi đã gắn Rancher (mode
-      // k8s-tunnel) — ẩn hẳn khi Rancher = "Không dùng" thay vì để trống/disable gây rối mắt.
-      function updateFieldVisibility() {
-        const display = env.rancherKey ? "" : "none";
-        projectField.field.style.display = display;
-        namespaceField.field.style.display = display;
-        dbHostPortField.field.style.display = display;
-        existingPodField.field.style.display = display;
-      }
-      updateFieldVisibility();
+      const rancherCell = editCell(row);
+      const projectCell = editCell(row);
+      const namespaceCell = editCell(row);
+      const connStringCell = editCell(row);
+      const dbHostPortCell = editCell(row);
+      const existingPodCell = editCell(row);
+      const allowWriteCell = document.createElement("td");
+      row.appendChild(allowWriteCell);
 
       const locked = !env.isNew;
 
@@ -1432,14 +2019,6 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         domainHint.className = "sm-cascade-hint";
         domainHint.textContent = `k8s-tunnel qua domain (cũ): ${env.domain}`;
         rancherCell.appendChild(domainHint);
-      }
-
-      // Dòng đã lưu (locked) chỉ giữ projectId thô trong config, không có tên thân thiện đi kèm —
-      // tự fetch 1 lần để resolve ra tên hiển thị (select bị disabled nên vẫn chỉ đọc, không cho
-      // sửa) thay vì hiện thẳng ID khó hiểu. Defer qua microtask để không gọi renderDbEnvTable()
-      // lồng ngay trong chính lượt render đang chạy (fetchCascade tự render lại khi xong).
-      if (locked && env.rancherKey && !env._projects) {
-        Promise.resolve().then(() => fetchCascade(env, "projects"));
       }
 
       projectCell.appendChild(
@@ -1613,91 +2192,11 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       // tay trực tiếp qua bảng này nữa. Cột này giờ hiện trạng thái kiểm tra kết nối thật.
       renderStatusCell(allowWriteCell, env);
 
-      const deleteDbEnvBtn = document.createElement("a");
-      deleteDbEnvBtn.href = "#";
-      deleteDbEnvBtn.className = "sm-btn-delete";
-      deleteDbEnvBtn.innerHTML = '<img src="/assets/delete.png" alt="" />';
-      deleteDbEnvBtn.title = "Xoá connection";
-      deleteDbEnvBtn.addEventListener("click", async (e) => {
-        e.preventDefault();
-        const confirmed = await confirmDeleteWithKey({
-          keyLabel: "URL Key",
-          expectedKey: env.name,
-          itemLabel: env.name || "(chưa đặt tên)"
-        });
-        if (!confirmed) return;
-        const [removed] = state.dbEnvironments.splice(index, 1);
-        renderDbEnvTable();
-        // Cùng lý do với deleteClusterBtn ở trên — entry đã lưu phải ghi file ngay, không chờ "Áp
-        // dụng", tránh reload trang làm mất thao tác xoá tưởng đã xong.
-        if (!removed.isNew) {
-          try {
-            await persistDbEnvironments();
-            setStatus(`Đã xoá connection "${removed.name || "(chưa đặt tên)"}".`, "success");
-          } catch (error) {
-            state.dbEnvironments.splice(index, 0, removed);
-            renderDbEnvTable();
-            setStatus(`Xoá connection "${removed.name || "(chưa đặt tên)"}" thất bại: ${error.message}`, "error");
-          }
-        }
-      });
-
-      // Chỉ hiện khi component được gọi với endpoints.testDbConnection (popup Cấu hình live —
-      // wizard quickstart không truyền field này vì mọi entry ở đó đều isNew, chưa có gì để test).
-      // Entry ĐÃ "Áp dụng" (!isNew) luôn bật. Entry CHƯA lưu (isNew) cũng bật được — qua
-      // endpoints.testDbConnectionAdhoc (xem testConnection() ở trên) — miễn đã gõ đủ Connection
-      // String + (nếu chọn Rancher, dùng k8s-tunnel) Namespace/Project/DB Host/Port, không cần "Áp
-      // dụng" trước.
-      if (endpoints.testDbConnection) {
-        const testEligible =
-          !env.isNew ||
-          Boolean(endpoints.testDbConnectionAdhoc && env.urlValue && (!env.rancherKey || (env.namespace && env.projectId && env.dbHost && env.dbPort)));
-        const testBtn = document.createElement("a");
-        testBtn.href = "#";
-        testBtn.className = testEligible ? "sm-btn-test" : "sm-btn-test disabled";
-        testBtn.innerHTML = '<img src="/assets/test-connection.png" alt="" />';
-        testBtn.title = testEligible
-          ? "Kiểm tra kết nối"
-          : "Nhập đủ Connection String" + (env.rancherKey ? "/Namespace/Project/DB Host/Port" : "") + " trước khi kiểm tra";
-        testBtn.addEventListener("click", (e) => {
-          e.preventDefault();
-          if (!testEligible) return;
-          testConnection(env);
-        });
-        actionsCell.appendChild(testBtn);
-      }
-      actionsCell.appendChild(deleteDbEnvBtn);
-
-      // Copy định danh duy nhất — rancherKey trong chuỗi này TRÙNG với name của Rancher tương ứng
-      // (copyClusterBtn ở trên) nên AI đọc riêng lẻ 2 chuỗi vẫn tự nối được "connection này thuộc
-      // rancher nào" qua so khớp giá trị, không cần thêm field nào khác.
-      const copyDbEnvBtn = document.createElement("a");
-      copyDbEnvBtn.href = "#";
-      copyDbEnvBtn.className = "sm-btn-copy";
-      copyDbEnvBtn.textContent = "⧉";
-      copyDbEnvBtn.title = "Copy định danh connection này";
-      copyDbEnvBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        const parts = [
-          `name="${env.name}"`,
-          `engine="${env.engine || ""}"`,
-          `rancherKey="${env.rancherKey || "(không dùng Rancher)"}"`,
-          `dbHost="${env.dbHost || ""}"`,
-          `dbPort="${env.dbPort || ""}"`,
-          `allowWrite=${Boolean(env.allowWrite)}`
-        ];
-        if (env.description) parts.push(`description="${env.description}"`);
-        navigator.clipboard.writeText(`Connection: ${parts.join(" ")}`).then(() => {
-          copyDbEnvBtn.textContent = "✓";
-          setTimeout(() => {
-            copyDbEnvBtn.textContent = "⧉";
-          }, 1000);
-        });
-      });
-      actionsCell.appendChild(copyDbEnvBtn);
-
+      row.appendChild(actionsTd);
       dbEnvBody.appendChild(row);
     });
+    syncSelectAll();
+    refreshExportButtons();
   }
 
   // ─── Nhóm Namespace (domain → cluster/project/namespace/deployment mapping) ───────────────────
@@ -1829,28 +2328,86 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     renderGroupsTable();
   }
 
+  function formatDomains(group) {
+    return (group.domains || [])
+      .filter((d) => d.url)
+      .map((d) => (d.env ? `${d.url} (${d.env})` : d.url))
+      .join("\n");
+  }
+
+  function formatServices(group) {
+    return (group.services || [])
+      .filter((s) => s.key || s.deployment)
+      .map((s) => `${s.key || ""} → ${s.deployment || ""}`)
+      .join("\n");
+  }
+
+  function bindGroupRowActions(actionsCell, group, index) {
+    appendEditToggle(actionsCell, group, renderGroupsTable);
+    const deleteGroupBtn = document.createElement("a");
+    deleteGroupBtn.href = "#";
+    deleteGroupBtn.className = "sm-btn-delete";
+    deleteGroupBtn.innerHTML = '<img src="/assets/delete.png" alt="" />';
+    deleteGroupBtn.title = "Xoá nhóm";
+    deleteGroupBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const confirmed = group.name
+        ? await confirmDeleteWithKey({ keyLabel: "Tên nhóm", expectedKey: group.name, itemLabel: group.name })
+        : true;
+      if (!confirmed) return;
+      const [removed] = state.namespaceGroups.splice(index, 1);
+      renderGroupsTable();
+      if (!removed.isNew) {
+        try {
+          await persistNamespaceGroups();
+          setStatus(`Đã xoá nhóm "${removed.name}".`, "success");
+        } catch (error) {
+          state.namespaceGroups.splice(index, 0, removed);
+          renderGroupsTable();
+          setStatus(`Xoá nhóm "${removed.name}" thất bại: ${error.message}`, "error");
+        }
+      }
+    });
+    actionsCell.appendChild(deleteGroupBtn);
+  }
+
   function renderGroupsTable() {
     groupBody.innerHTML = "";
     state.namespaceGroups.forEach((group, index) => {
-      const row = document.createElement("div");
-      row.className = "sm-card";
+      const editing = isEditing(group);
+      const row = document.createElement("tr");
+      const actionsTd = document.createElement("td");
+      const actionsCell = document.createElement("div");
+      actionsCell.className = "sm-row-actions";
+      actionsTd.appendChild(actionsCell);
+      appendSelectCell(row, group);
+      bindGroupRowActions(actionsCell, group, index);
 
-      const descHeader = createDescHeader({
-        index: index + 1,
-        getValue: () => group.description,
-        onCommit: (value) => {
-          group.description = value;
-        },
-        placeholder: "Mô tả (tuỳ chọn)",
-        icon: "/assets/domain-deployment.png",
-        iconAlt: "Nhóm namespace",
-        labelPrefix: "Nhóm"
+      if (!editing) {
+        textCell(row, group.description || "");
+        textCell(row, group.name || "");
+        textCell(row, group.rancherKey || "");
+        textCell(row, optionLabel(group._projects, group.projectId));
+        textCell(row, group.namespace || "");
+        textCell(row, formatDomains(group));
+        textCell(row, formatServices(group));
+        row.appendChild(actionsTd);
+        groupBody.appendChild(row);
+        return;
+      }
+
+      const descCell = editCell(row);
+      const descInput = document.createElement("input");
+      descInput.type = "text";
+      descInput.autocomplete = "off";
+      descInput.placeholder = "Mô tả (tuỳ chọn)";
+      descInput.value = group.description || "";
+      descInput.addEventListener("input", () => {
+        group.description = descInput.value.trim();
       });
-      row.appendChild(descHeader.header);
-      const actionsCell = descHeader.actionsSlot;
+      descCell.appendChild(descInput);
 
-      const nameField = createField("Tên nhóm");
-      row.appendChild(nameField.field);
+      const nameCell = editCell(row);
       const nameInput = document.createElement("input");
       nameInput.type = "text";
       nameInput.autocomplete = "off";
@@ -1859,14 +2416,13 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       nameInput.addEventListener("input", () => {
         group.name = nameInput.value.trim();
       });
-      nameField.value.appendChild(nameInput);
+      nameCell.appendChild(nameInput);
 
-      const clusterField = createField("Rancher Cluster");
-      row.appendChild(clusterField.field);
+      const clusterCell = editCell(row);
       const clusterOptions = state.rancherClusters
         .filter((c) => c.name && !c.isNew)
         .map((c) => ({ value: c.name, label: c.description ? `${c.name} (${c.description})` : c.name }));
-      clusterField.value.appendChild(
+      clusterCell.appendChild(
         buildSearchableSelect({
           options: clusterOptions,
           value: group.rancherKey || "",
@@ -1886,9 +2442,8 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         })
       );
 
-      const projectField = createField("Project");
-      row.appendChild(projectField.field);
-      projectField.value.appendChild(
+      const projectCell = editCell(row);
+      projectCell.appendChild(
         buildGroupCascadeCell({
           options: group._projects,
           currentValue: group.projectId,
@@ -1907,9 +2462,8 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         })
       );
 
-      const namespaceField = createField("Namespace");
-      row.appendChild(namespaceField.field);
-      namespaceField.value.appendChild(
+      const namespaceCell = editCell(row);
+      namespaceCell.appendChild(
         buildGroupCascadeCell({
           options: group._namespaces,
           currentValue: group.namespace,
@@ -1926,8 +2480,7 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       );
 
       // Domains — danh sách {url, env}, tối thiểu 1 dòng.
-      const domainsField = createField("Domain (URL)");
-      row.appendChild(domainsField.field);
+      const domainsCell = editCell(row);
       const domainsWrap = document.createElement("div");
       domainsWrap.className = "sm-subrow-list";
       if (!group.domains || !group.domains.length) group.domains = [{ url: "", env: "" }];
@@ -1981,12 +2534,11 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         renderGroupsTable();
       });
       domainsWrap.appendChild(addDomainBtn);
-      domainsField.value.appendChild(domainsWrap);
+      domainsCell.appendChild(domainsWrap);
 
       // Services — danh sách {key, deployment}, key khớp tham số <service> của node index.js --deploy
       // (r3svc/r3web/r3auth...), deployment là tên Deployment thật trên k8s.
-      const servicesField = createField("Service → Deployment");
-      row.appendChild(servicesField.field);
+      const servicesCell = editCell(row);
       const servicesWrap = document.createElement("div");
       servicesWrap.className = "sm-subrow-list";
       if (!group.services || !group.services.length) group.services = [{ key: "", deployment: "" }];
@@ -2042,36 +2594,13 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         renderGroupsTable();
       });
       servicesWrap.appendChild(addServiceBtn);
-      servicesField.value.appendChild(servicesWrap);
+      servicesCell.appendChild(servicesWrap);
 
-      const deleteGroupBtn = document.createElement("a");
-      deleteGroupBtn.href = "#";
-      deleteGroupBtn.className = "sm-btn-delete";
-      deleteGroupBtn.innerHTML = '<img src="/assets/delete.png" alt="" />';
-      deleteGroupBtn.title = "Xoá nhóm";
-      deleteGroupBtn.addEventListener("click", async (e) => {
-        e.preventDefault();
-        const confirmed = group.name
-          ? await confirmDeleteWithKey({ keyLabel: "Tên nhóm", expectedKey: group.name, itemLabel: group.name })
-          : true;
-        if (!confirmed) return;
-        const [removed] = state.namespaceGroups.splice(index, 1);
-        renderGroupsTable();
-        if (!removed.isNew) {
-          try {
-            await persistNamespaceGroups();
-            setStatus(`Đã xoá nhóm "${removed.name}".`, "success");
-          } catch (error) {
-            state.namespaceGroups.splice(index, 0, removed);
-            renderGroupsTable();
-            setStatus(`Xoá nhóm "${removed.name}" thất bại: ${error.message}`, "error");
-          }
-        }
-      });
-      actionsCell.appendChild(deleteGroupBtn);
-
+      row.appendChild(actionsTd);
       groupBody.appendChild(row);
     });
+    syncSelectAll();
+    refreshExportButtons();
   }
 
   async function persistNamespaceGroups() {
@@ -2086,7 +2615,7 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
           projectId: g.projectId,
           namespace: g.namespace,
           domains: (g.domains || []).filter((d) => d.url).map((d) => ({ url: d.url, env: d.env || undefined })),
-          services: Object.fromEntries((g.services || []).filter((s) => s.key && s.deployment).map((s) => [s.key, { deployment: s.deployment }]))
+          services: Object.fromEntries((g.services || []).filter((s) => s.key && s.deployment).map((s) => [s.key, { deployment: s.deployment, ...(s.configMap ? { configMap: s.configMap } : {}) }]))
         }))
       })
     }).then(assertOk);
@@ -2094,7 +2623,7 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
 
   btnAddGroup.addEventListener("click", (e) => {
     e.preventDefault();
-    state.namespaceGroups.push({
+    state.namespaceGroups.unshift({
       name: "",
       rancherKey: "",
       projectId: "",
@@ -2102,52 +2631,75 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
       domains: [{ url: "", env: "" }],
       services: [{ key: "", deployment: "" }],
       description: "",
-      isNew: true
+      isNew: true,
+      _editing: true
     });
     renderGroupsTable();
     requestAnimationFrame(() => {
-      const container = groupBody.querySelector(".sm-card:last-child");
-      focusFirstInputInList(container, 'input');
+      focusFirstInputInList(groupBody.querySelector("tr"), "input");
     });
   });
 
   btnAddCluster.addEventListener("click", (e) => {
     e.preventDefault();
-    state.rancherClusters.push({
+    state.rancherClusters.unshift({
       name: "",
       rancherUrl: "",
       clusterId: "",
       insecureTLS: true,
       tokenEnvVar: "",
       description: "",
+      username: "",
+      tokenPrefix: "",
       hasValue: false,
       tokenValue: "",
-      isNew: true
+      isNew: true,
+      _editing: true
     });
     renderRancherTable();
     requestAnimationFrame(() => {
-      const container = rancherBody.querySelector(".sm-card:last-child");
-      focusFirstInputInList(container, 'input');
+      focusFirstInputInList(rancherBody.querySelector("tr"), "input");
     });
   });
 
   btnAddDbEnv.addEventListener("click", (e) => {
     e.preventDefault();
-    state.dbEnvironments.push({
+    state.dbEnvironments.unshift({
       name: "",
       description: "",
       connectionStringEnvVar: "",
       allowWrite: true,
       hasValue: false,
       urlValue: "",
-      isNew: true
+      isNew: true,
+      _editing: true
     });
     renderDbEnvTable();
     requestAnimationFrame(() => {
-      const container = dbEnvBody.querySelector(".sm-card:last-child");
-      focusFirstInputInList(container, 'input');
+      focusFirstInputInList(dbEnvBody.querySelector("tr"), "input");
     });
   });
+
+  if (btnExportDb) btnExportDb.addEventListener("click", exportSelected);
+  if (btnExportGroup) btnExportGroup.addEventListener("click", exportSelected);
+  const dbSelectAll = mountEl.querySelector("#smDbEnvSelectAll");
+  const groupSelectAll = mountEl.querySelector("#smGroupSelectAll");
+  if (dbSelectAll) {
+    dbSelectAll.addEventListener("change", () => {
+      state.dbEnvironments.forEach((item) => {
+        if (item.name && !item.isNew) item._selected = dbSelectAll.checked;
+      });
+      renderDbEnvTable();
+    });
+  }
+  if (groupSelectAll) {
+    groupSelectAll.addEventListener("change", () => {
+      state.namespaceGroups.forEach((item) => {
+        if (item.name && !item.isNew) item._selected = groupSelectAll.checked;
+      });
+      renderGroupsTable();
+    });
+  }
 
   // k8sql cài đặt qua gói OS chuẩn (.deb/.AppImage/.msi/.dmg) — không có khái niệm "thư mục cài
   // đặt" tuỳ chọn như k8sctl (installer bash tự viết, cho phép trỏ vào bất kỳ đâu kể cả thư mục
@@ -2232,9 +2784,17 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
         }
       }
 
-      await persistRancherClusters();
-      await persistDbEnvironments();
-      await persistNamespaceGroups();
+      let rancherRemoved = false;
+      for (const cluster of [...state.rancherClusters]) {
+        if (!state.rancherClusters.includes(cluster)) continue;
+        if (!String(cluster.username || "").trim()) continue;
+        const result = await commitClusterUsername(cluster);
+        if (result.cancelled) {
+          throw new Error(`Rancher Key đã tồn tại. Đổi username hoặc huỷ gộp rancher "${cluster.rancherUrl || cluster.name}".`);
+        }
+        if (result.merged) rancherRemoved = true;
+      }
+      await persistSettings({ rancherRemoved });
 
       // KHÔNG gửi "PORT" — UI này không có field chỉnh port (xem CLAUDE.md "Port KHÔNG còn hiển
       // thị trên UI"), giá trị PORT thật của mỗi máy có thể khác 3210 (vd đã đổi tay trong .env để
@@ -2283,14 +2843,14 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     ]);
 
     state.rancherClusters = (clusters.data || []).map((c) => ({ ...c, tokenValue: "", isNew: false }));
-    state.dbEnvironments = (dbEnvironments.data || []).map((e) => ({ ...e, urlValue: "", isNew: false }));
+    state.dbEnvironments = (dbEnvironments.data || []).map((e) => ({ ...e, urlValue: "", isNew: false, _savedPodName: e.existingPodName || null }));
     state.namespaceGroups = (namespaceGroups.data || []).map((g) => ({
       name: g.name,
       rancherKey: g.rancherCluster || "",
       projectId: g.projectId || "",
       namespace: g.namespace,
       domains: (g.domains || []).map((d) => ({ url: d.url, env: d.env || "" })),
-      services: Object.entries(g.services || {}).map(([key, v]) => ({ key, deployment: v.deployment || "" })),
+      services: Object.entries(g.services || {}).map(([key, v]) => ({ key, deployment: v.deployment || "", configMap: v.configMap || "" })),
       description: "",
       isNew: false
     }));
@@ -2314,18 +2874,8 @@ export async function initSettingsModal({ mountEl, endpoints, applyLabel, onClos
     });
   }
 
-  mountEl.querySelectorAll(".sm-section-toggle").forEach((toggle) => {
-    const key = toggle.closest(".sm-section")?.dataset.section;
-    const body = mountEl.querySelector(`#${toggle.dataset.target}`);
-    if (!key || !body) return;
-    setSectionExpanded(key, false);
-    toggle.addEventListener("click", () => {
-      const next = body.hidden;
-      setSectionExpanded(key, next);
-    });
-  });
-
   await load();
+  showSection("rancher");
 
-  return { reload: load };
+  return { reload: load, showSection };
 }

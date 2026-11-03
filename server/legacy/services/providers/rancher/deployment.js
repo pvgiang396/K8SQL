@@ -113,6 +113,38 @@ async function deleteDeployment(ctx, deploymentName) {
   return { message: `Deployment deleted: ${deploymentName}` };
 }
 
+async function setDeploymentEnv(ctx, deploymentName, envVars, containerName) {
+  const deployment = await findRawDeployment(ctx, deploymentName);
+  const containers = deployment.containers || [];
+  const targetName = containerName || deploymentName;
+  const container = containers.find((c) => c.name === targetName);
+  if (!container) {
+    throw new AppError(
+      `Không tìm thấy container "${targetName}" trong deployment "${deploymentName}".`,
+      404,
+      { availableContainers: containers.map((c) => c.name) }
+    );
+  }
+
+  container.env = container.env || [];
+  Object.entries(envVars).forEach(([key, value]) => {
+    const existing = container.env.find((e) => e.name === key);
+    if (existing) {
+      existing.value = String(value);
+    } else {
+      container.env.push({ name: key, value: String(value) });
+    }
+  });
+
+  await rancherRequest(ctx, {
+    method: "PUT",
+    path: `${projectPrefix(ctx)}/workloads/deployment:${ctx.namespace}:${deploymentName}`,
+    body: deployment
+  });
+
+  return { message: `Deployment env updated: ${deploymentName}`, container: targetName, envVars };
+}
+
 module.exports = {
   listDeployments,
   describeDeployment,
@@ -120,5 +152,6 @@ module.exports = {
   restartDeployment,
   scaleDeployment,
   setDeploymentImage,
+  setDeploymentEnv,
   deleteDeployment
 };

@@ -19,6 +19,50 @@ fn wants_tray_only() -> bool {
     std::env::args().any(|a| a == "--tray")
 }
 
+fn wants_print_ai_guide() -> bool {
+    std::env::args().any(|a| a == "--print-ai-guide")
+}
+
+/// Đường dẫn file hướng dẫn trên máy đã cài. Khớp app data dir của Tauri khi identifier
+/// là `com.pvgiang396.k8sql`. Xử lý trước `tauri::Builder` để single-instance không nuốt argv.
+fn installed_ai_guide_path() -> std::path::PathBuf {
+    if cfg!(windows) {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return std::path::PathBuf::from(appdata)
+                .join("com.pvgiang396.k8sql")
+                .join("AI.md");
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    if cfg!(target_os = "macos") {
+        return std::path::PathBuf::from(home)
+            .join("Library/Application Support/com.pvgiang396.k8sql/AI.md");
+    }
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        if !xdg.is_empty() {
+            return std::path::PathBuf::from(xdg)
+                .join("com.pvgiang396.k8sql")
+                .join("AI.md");
+        }
+    }
+    std::path::PathBuf::from(home)
+        .join(".local/share/com.pvgiang396.k8sql/AI.md")
+}
+
+fn print_ai_guide_and_exit() -> ! {
+    let path = installed_ai_guide_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let guide = include_str!("../../docs/AI.md");
+    if std::fs::write(&path, guide).is_err() {
+        eprintln!("Không ghi được {}", path.display());
+        std::process::exit(1);
+    }
+    println!("{}", path.display());
+    std::process::exit(0);
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -41,6 +85,9 @@ fn quit_app(app: &AppHandle) {
 }
 
 fn main() {
+    if wants_print_ai_guide() {
+        print_ai_guide_and_exit();
+    }
     tauri::Builder::default()
         // Phải là plugin ĐẦU TIÊN (yêu cầu của tauri-plugin-single-instance). Instance thứ 2 khởi
         // chạy (vd bấm icon desktop trong lúc app đã chạy nền do AI mở hoặc do autostart) chỉ show

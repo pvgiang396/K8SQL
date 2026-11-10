@@ -1,5 +1,7 @@
 # k8sql — AI Reference
 
+Hướng dẫn để AI gọi MCP nằm ở [`docs/AI.md`](docs/AI.md). Bản đã cài: `k8sql --print-ai-guide` hoặc `GET /ai-guide`. File này giữ kiến trúc và lịch sử sửa lỗi.
+
 > File này tự đủ để hiểu kiến trúc k8sql và tiếp tục triển khai — không cần đọc lại toàn bộ lịch sử
 > quyết định trong plan gốc. Kế hoạch triển khai đầy đủ (đã duyệt) nằm ở
 > `~/.claude/plans/hi-n-t-i-project-k8sctl-parallel-glade.md` trên máy tác giả — file này là bản

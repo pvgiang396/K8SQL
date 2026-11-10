@@ -5,6 +5,7 @@
 // KHÔNG hỗ trợ các cú pháp TS-only đó (đã tự verify, throw `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`).
 // esbuild (Phase 2 SEA) cũng xử lý require() bình thường khi bundle sang CJS, không mất tương thích.
 const path: typeof import("node:path") = require("node:path");
+const fs: typeof import("node:fs") = require("node:fs");
 // require() giữa các file .ts phải khai rõ đuôi ".ts" — Node's native TS type-stripping (dev mode,
 // `node src/bootstrap.ts`) KHÔNG tự resolve extension .ts như .js (đã tự verify, MODULE_NOT_FOUND
 // nếu bỏ đuôi); esbuild (Phase 2 SEA) resolve đúng cả 2 cách nên không mất tương thích khi bundle.
@@ -50,6 +51,23 @@ function resolveDataDir(): string {
   const explicit = readArg("data-dir");
   if (explicit) return explicit;
   return path.join(__dirname, "..", ".data");
+}
+
+// docs/AI.md cạnh repo khi chạy source. Bản SEA không đọc được path này; Rust ghi AI.md
+// vào data dir trước khi spawn, hoặc file đã có từ lần chạy source trước.
+function loadAiGuide(): string {
+  const fromSource = path.join(__dirname, "..", "..", "docs", "AI.md");
+  if (fs.existsSync(fromSource)) return fs.readFileSync(fromSource, "utf8");
+  return "";
+}
+
+function writeAiFiles(dataDir: string, host: string, port: number) {
+  const fromSource = loadAiGuide();
+  const target = path.join(dataDir, "AI.md");
+  if (fromSource) fs.writeFileSync(target, fromSource);
+  if (fs.existsSync(target)) {
+    fs.writeFileSync(path.join(dataDir, "mcp.url"), `http://${host}:${port}/mcp\n`);
+  }
 }
 
 async function main() {
@@ -141,9 +159,20 @@ async function main() {
       // MCP server cho AI (Claude Code/Claude Desktop) — xem src/mcp/server.ts + k8sql/CLAUDE.md
       // mục "MCP server" cho quyết định kiến trúc (route HTTP trong CHÍNH sidecar này, không phải
       // process riêng, vì secret thật chỉ có trong process.env của tiến trình đang chạy).
+      expressApp.get("/ai-guide", (_req: import("express").Request, res: import("express").Response) => {
+        const file = path.join(dataDir, "AI.md");
+        if (!fs.existsSync(file)) {
+          res.status(404).type("text/plain").send("Chưa có AI.md trong data dir.");
+          return;
+        }
+        res.type("text/markdown").send(fs.readFileSync(file, "utf8"));
+      });
+
       registerMcpRoute(expressApp);
     },
   });
+
+  writeAiFiles(dataDir, host, port);
 
   const server = app.listen(port, host, () => {
     console.log(`k8sql sidecar listening on ${host}:${port}`);
